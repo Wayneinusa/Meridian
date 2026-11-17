@@ -57,7 +57,9 @@ jobs:
 
   ios:
     name: iPhone and iPad
-    runs-on: macos-26
+    # macos-15 has a much larger pool of machines than macos-26, whose queue timed out
+    runs-on: macos-15
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       # When the source was uploaded as one file (meridian-source.tar.gz) instead of pushed, unpack it first.
