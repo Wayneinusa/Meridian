@@ -60,7 +60,7 @@ function openaiStream(text) {
   return lines.join("");
 }
 
-const seen = { anthropic: [], openai: [], images: [], mcp: [], xai: [], sora: [] };
+const seen = { anthropic: [], openai: [], images: [], mcp: [], xai: [], sora: [], titles: [] };
 
 function lastUserText(body) {
   const last = body.messages[body.messages.length - 1];
@@ -86,6 +86,13 @@ async function installMocks(page) {
       return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "application/json" }, body: JSON.stringify({ data: [mk("claude-opus-5-5", "Claude Opus 5.5"), mk("claude-fable-5-2", "Claude Fable 5.2"), mk("claude-haiku-5-5", "Claude Haiku 5.5")], has_more: false, first_id: "claude-opus-5-5", last_id: "claude-haiku-5-5" }) });
     }
     const body = req.postDataJSON();
+    const sys = Array.isArray(body.system) ? body.system.map((b) => b.text).join(" ") : (body.system ?? "");
+    if (/You name conversations/.test(sys)) {
+      // auto-title request: answer with the user's first line so titles stay predictable
+      seen.titles.push(body);
+      const first = /User: ([^\n]*)/.exec(lastUserText(body))?.[1] ?? "Chat";
+      return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "text/event-stream" }, body: anthropicStream(body.model, [{ type: "text", text: first.slice(0, 40) }], "end_turn") });
+    }
     seen.anthropic.push({ body, headers: req.headers() });
     const text = lastUserText(body);
     let blocks, stop = "end_turn";
@@ -251,7 +258,8 @@ async function main() {
     check("request: refusal fallback opted in", first.body.fallbacks === "default" && /server-side-fallback-2026-07-01/.test(first.headers["anthropic-beta"] ?? ""), first.headers["anthropic-beta"]);
     check("request: file tools offered with eager streaming", first.body.tools.some((t) => t.name === "create_spreadsheet" && t.eager_input_streaming === true) && first.body.tools.some((t) => t.type === "web_search_20260209"));
     check("request: computer tools NOT offered in a browser", !first.body.tools.some((t) => t.name === "run_command"));
-    check("chat titled from first message", (await page.locator(".chat-title").textContent()) === "Hello there");
+    await page.waitForFunction(() => document.querySelector(".chat-title")?.textContent === "Hello there", null, { timeout: 5000 }).catch(() => {});
+    check("chat titled by the model after the first answer", seen.titles.length === 1 && (await page.locator(".chat-title").textContent()) === "Hello there", `${seen.titles.length} ${await page.locator(".chat-title").textContent()}`);
 
     console.log("spreadsheet tool round trip");
     const before = seen.anthropic.length;
@@ -412,7 +420,8 @@ async function main() {
 
     page.once("dialog", (d) => d.accept());
     await page.locator(".conv", { hasText: "Hello there" }).hover();
-    await page.locator(".conv", { hasText: "Hello there" }).locator('button[title="Delete"]').click();
+    await page.locator(".conv", { hasText: "Hello there" }).locator('button[title="More"]').click();
+    await page.locator(".conv", { hasText: "Hello there" }).getByRole("button", { name: "Delete" }).click();
     await page.waitForFunction(() => ![...document.querySelectorAll(".conv")].some((c) => /Hello there/.test(c.textContent)));
     check("chat deleted", (await page.locator(".conv").count()) === 1);
     // edit the surviving chat so the import has something to preserve

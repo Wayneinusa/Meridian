@@ -3,7 +3,7 @@ import { invoke, platform } from "../platform";
 import { pickFolder } from "../platform/files";
 import { deleteSecret, mcpTokenName, setSecret } from "../platform/secrets";
 import { COMPATIBLE_PRESETS, manualModel } from "../providers/registry";
-import { exportBackupFile, importBackupFile, refreshModels, saveProviderKey, syncNow, toast, updateSettings, useApp } from "../state/store";
+import { addManualModel, cancelWake, exportBackupFile, importBackupFile, refreshModels, removeModel, saveProviderKey, syncNow, toast, updateSettings, useApp, wakeUp } from "../state/store";
 import { mcpManager } from "../tools/mcp";
 import type { McpServerConfig, ModelInfo, ModelRef, ProviderConfig, Settings } from "../types";
 import { modelKey, uid } from "../types";
@@ -37,7 +37,37 @@ function Toggle({ checked, onChange, label, hint, disabled }: { checked: boolean
 function ProviderCard({ provider }: { provider: ProviderConfig }) {
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
-  const builtin = ["anthropic", "openai", "gemini"].includes(provider.id);
+  const [modelId, setModelId] = useState("");
+  const [modelKind, setModelKind] = useState<"" | "chat" | "image" | "video">("");
+  const [waking, setWaking] = useState<Record<string, string>>({});
+  const builtin = ["anthropic", "openai", "gemini", "xai"].includes(provider.id);
+  const manual = provider.models.filter((m) => m.userEdited);
+
+  const wake = async (id: string) => {
+    setWaking((w) => ({ ...w, [id]: "starting" }));
+    try {
+      const r = await wakeUp(provider.id, id, (note) => setWaking((w) => ({ ...w, [id]: note })));
+      toast(r.ok ? r.message : `${id}: ${r.message}`, r.ok ? "ok" : "error");
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) toast(`${id}: ${errText(e)}`, "error");
+    } finally {
+      setWaking((w) => {
+        const n = { ...w };
+        delete n[id];
+        return n;
+      });
+    }
+  };
+
+  const addModel = async (andWake: boolean) => {
+    const id = modelId.trim();
+    if (!id) return;
+    await addManualModel(provider.id, id, modelKind || undefined);
+    setModelId("");
+    const kind = useApp.getState().settings.providers.find((p) => p.id === provider.id)?.models.find((m) => m.id === id)?.kind;
+    toast(`Added ${id}. It is now in the model picker${kind && kind !== "chat" ? ` under ${kind === "image" ? "Image" : "Video"}` : ""}.`, "ok");
+    if (andWake && kind === "chat") void wake(id);
+  };
   const patch = (p: Partial<ProviderConfig>) => updateSettings((s) => ({ providers: s.providers.map((x) => (x.id === provider.id ? { ...x, ...p } : x)) }));
 
   const fetchModels = async () => {
@@ -90,6 +120,60 @@ function ProviderCard({ provider }: { provider: ProviderConfig }) {
           <button className="btn primary" disabled={!key.trim()} onClick={() => void save()}>Save</button>
         </div>
       </label>
+      <label className="field">
+        <span>Model ID (optional)</span>
+        <div className="row wrap">
+          <input
+            type="text"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            placeholder="e.g. meta-llama/Llama-3.3-70B-Instruct"
+            value={modelId}
+            onChange={(e) => setModelId(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void addModel(true)}
+            style={{ flex: "1 1 220px" }}
+            aria-label={`Model ID for ${provider.name}`}
+          />
+          <select value={modelKind} onChange={(e) => setModelKind(e.target.value as typeof modelKind)} style={{ width: "auto", flex: "0 0 auto" }} aria-label="Model type">
+            <option value="">Detect type</option>
+            <option value="chat">Chat</option>
+            <option value="image">Image</option>
+            <option value="video">Video</option>
+          </select>
+          <button className="btn" disabled={!modelId.trim()} onClick={() => void addModel(false)}>Add</button>
+          <button className="btn primary" disabled={!modelId.trim()} onClick={() => void addModel(true)} title="Add the model and send a test message until it has loaded">
+            Add &amp; wake up
+          </button>
+        </div>
+        <small className="hint">
+          For models the provider does not list right now, such as cold models that load on first use. Wake up sends a tiny test message and keeps retrying for up to 10 minutes while the model loads.
+        </small>
+      </label>
+      {manual.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          {manual.map((m) => (
+            <div className="model-row" key={m.id}>
+              <span className="name" title={m.id}>{m.id}</span>
+              <span className="badge">{m.kind}</span>
+              {waking[m.id] ? (
+                <>
+                  <span className="spinner" />
+                  <span className="hint">{waking[m.id]}</span>
+                  <button className="btn small" onClick={() => cancelWake(provider.id, m.id)}>Stop</button>
+                </>
+              ) : (
+                m.kind === "chat" && (
+                  <button className="btn small" onClick={() => void wake(m.id)}>Wake up</button>
+                )
+              )}
+              <button className="icon-btn" title={`Remove ${m.id}`} onClick={() => void removeModel(provider.id, m.id)}>
+                <Icon.x />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="row wrap">
         <button className="btn small" disabled={busy} onClick={() => void fetchModels()}>
           <Icon.refresh /> {busy ? "Fetching…" : "Fetch model list"}

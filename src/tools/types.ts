@@ -1,5 +1,6 @@
 import type { ToolSpec } from "../providers/types";
-import type { BlobRef, Part, Settings } from "../types";
+import type { Library } from "../storage/library";
+import type { BlobRef, Conversation, Part, PlanItem, Settings } from "../types";
 
 export type ToolGroup = "files" | "media" | "web" | "computer" | "connectors";
 
@@ -22,8 +23,18 @@ export interface ToolContext {
   files(): (BlobRef & { kind: Part["type"] })[];
   /** everything the user typed in this conversation */
   userText(): string;
+  /** addresses found by web_search in this conversation (safe to open without asking) */
+  trustedUrls(): Set<string>;
   getKey(providerId: string): Promise<string>;
   progress(note: string): void;
+  library: Library;
+  conversation(): Conversation;
+  /** text stored as a blob (extracted knowledge) */
+  loadText(blobId: string): Promise<string | null>;
+  setPlan(steps: PlanItem[]): void;
+  /** ask the user a question; resolves to the answer, or null if dismissed */
+  ask(question: string, options: string[], multiple: boolean): Promise<string | null>;
+  runSubagent(task: string, label: string): Promise<string>;
 }
 
 export interface Tool {

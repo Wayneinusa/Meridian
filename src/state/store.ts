@@ -1,25 +1,52 @@
-// App state and the agent loop: send a message, stream the reply, run the
-// tools the model asks for (after asking the user where needed), repeat.
+// App state: settings, chats, the library (agents, projects, prompts,
+// memories, plugins, automations), sync and backup. The agent loop itself
+// lives in agent/engine.ts; this file supplies it with UI hooks.
 import { create } from "zustand";
-import { buildSystemPrompt } from "../agent/prompt";
+import { contextOf, currentRef, runTurn, suggestTitle, type EngineHost } from "../agent/engine";
 import { initPlatform, invoke, isTauri, joinPath, platform } from "../platform";
 import { saveFile } from "../platform/files";
+import { notify } from "../platform/notify";
 import { deleteSecret, getSecret, providerKeyName, setSecret } from "../platform/secrets";
-import { resolveParams, supportedParams } from "../providers/params";
-import { adapterFor, findModel, mergeModelLists } from "../providers/registry";
+import { GALLERY } from "../plugins/gallery";
+import type { PluginDraft } from "../plugins/import";
+import { pluginSecretName } from "../plugins/runtime";
+import { pickDefaultMedia } from "../providers/media";
+import { adapterFor, findModel, manualModel, mergeModelLists } from "../providers/registry";
 import type { BlobAccess } from "../providers/types";
+import { wakeModel, type WakeResult } from "../providers/wake";
 import { BACKUP_EXT, exportBackup, importBackup } from "../storage/backup";
 import { FsKV, IdbKV, type KV } from "../storage/kv";
+import { Library } from "../storage/library";
 import { blobRefsOf, emptyConversation } from "../storage/merge";
 import { blobKey, Repo } from "../storage/repo";
 import { emptySyncState, syncWithRemote, type SyncState } from "../storage/sync";
-import { activeTools, type Tool, type ToolContext } from "../tools";
-import { createMedia, mediaModelFor, noMediaModelMessage } from "../tools/media";
+import { chatToHtml, chatToMarkdown, detectAndImport } from "../storage/transfer";
 import { extractText } from "../tools/extract";
-import { validateInput } from "../tools/validate";
-import type { BlobRef, Conversation, ConvMeta, MediaOptions, Message, ModelParams, ModelRef, Part, Settings, ToolResultData } from "../types";
-import { uid } from "../types";
-import { bytesToBase64, formatBytes, mimeFromName } from "../util/bytes";
+import { buildDocx, buildPdf } from "../tools/files";
+import { mcpManager } from "../tools/mcp";
+import { mediaModelFor, noMediaModelMessage } from "../tools/media";
+import type { Tool } from "../tools/types";
+import type {
+  Agent,
+  BlobRef,
+  CollectionName,
+  CollectionTypes,
+  Conversation,
+  ConvMeta,
+  KnowledgeFile,
+  McpServerConfig,
+  MediaOptions,
+  Message,
+  ModelParams,
+  ModelRef,
+  Part,
+  Plugin,
+  Project,
+  Settings,
+  TurnVersion,
+} from "../types";
+import { COLLECTIONS, uid } from "../types";
+import { bytesToBase64, formatBytes, mimeFromName, safeFileName, utf8 } from "../util/bytes";
 import { defaultSettings, migrateSettings } from "./defaults";
 
 export interface PermissionRequest {
@@ -31,6 +58,15 @@ export interface PermissionRequest {
   detail: string;
   group: Tool["group"];
   resolve(decision: "deny" | "once" | "always"): void;
+}
+
+export interface QuestionRequest {
+  id: string;
+  convId: string;
+  question: string;
+  options: string[];
+  multiple: boolean;
+  resolve(answer: string | null): void;
 }
 
 export interface Toast {
@@ -46,6 +82,29 @@ export interface SyncStatus {
   message?: string;
 }
 
+export type View =
+  | { name: "chat" }
+  | { name: "agents" }
+  | { name: "projects" }
+  | { name: "project"; id: string }
+  | { name: "prompts" }
+  | { name: "automations" }
+  | { name: "usage" }
+  | { name: "search" };
+
+export type LibState = { [C in CollectionName]: CollectionTypes[C][] };
+
+export interface Draft {
+  model?: ModelRef;
+  params?: ModelParams;
+  media?: MediaOptions;
+  chatModel?: ModelRef;
+  agentId?: string;
+  projectId?: string;
+  mode?: "chat" | "research";
+  workFolder?: string;
+}
+
 interface State {
   ready: boolean;
   settings: Settings;
@@ -55,24 +114,26 @@ interface State {
   /** conversation id -> short status while it is generating */
   busy: Record<string, string>;
   permission: PermissionRequest | null;
+  question: QuestionRequest | null;
   toasts: Toast[];
   sync: SyncStatus;
   sidebarOpen: boolean;
   settingsTab: string | null;
   paramsOpen: boolean;
   preview: BlobRef | null;
-  /** files handed to the composer from elsewhere (e.g. "Edit" on a generated image) */
-  composerInbox: { parts: Extract<Part, { type: "attachment" }>[]; seq: number };
-  /** choices made on the empty "new chat" screen, before a conversation exists */
+  composerInbox: { parts: Extract<Part, { type: "attachment" }>[]; text?: string; seq: number };
   draft: Draft;
+  view: View;
+  lib: LibState;
+  /** the open chat is private: never saved or synced */
+  incognito: boolean;
+  showArchived: boolean;
+  /** user message id whose versions are shown side by side */
+  compareOpen: string | null;
+  artifactsOpen: boolean;
 }
 
-export interface Draft {
-  model?: ModelRef;
-  params?: ModelParams;
-  media?: MediaOptions;
-  chatModel?: ModelRef;
-}
+const emptyLib = (): LibState => ({ agents: [], projects: [], prompts: [], memories: [], plugins: [], automations: [] });
 
 export const useApp = create<State>(() => ({
   ready: false,
@@ -82,6 +143,7 @@ export const useApp = create<State>(() => ({
   active: null,
   busy: {},
   permission: null,
+  question: null,
   toasts: [],
   sync: { state: "off" },
   sidebarOpen: typeof window !== "undefined" ? window.innerWidth > 860 : true,
@@ -90,6 +152,12 @@ export const useApp = create<State>(() => ({
   preview: null,
   composerInbox: { parts: [], seq: 0 },
   draft: {},
+  view: { name: "chat" },
+  lib: emptyLib(),
+  incognito: false,
+  showArchived: false,
+  compareOpen: null,
+  artifactsOpen: false,
 }));
 
 const set = useApp.setState;
@@ -97,13 +165,15 @@ const get = useApp.getState;
 
 let kv: KV;
 export let repo: Repo;
+export let library: Library;
 const live = new Map<string, Conversation>();
+const privateIds = new Set<string>();
 const aborts = new Map<string, AbortController>();
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const keyCache = new Map<string, string>();
 const b64Cache = new Map<string, string>();
 
-// ---------- small helpers ----------
+// ---------------------------------------------------------------- helpers
 
 export function toast(text: string, kind: Toast["kind"] = "info") {
   const id = uid("t");
@@ -111,11 +181,17 @@ export function toast(text: string, kind: Toast["kind"] = "info") {
   setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), kind === "error" ? 9000 : 4500);
 }
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+export const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const isAbort = (e: unknown) => e instanceof DOMException && e.name === "AbortError";
 
 function refreshMetas() {
   set({ metas: repo.list() });
+}
+
+function refreshLib() {
+  const lib = emptyLib();
+  for (const c of COLLECTIONS) (lib as Record<string, unknown>)[c] = library.list(c);
+  set({ lib });
 }
 
 let renderQueued = false;
@@ -132,7 +208,7 @@ function render(id: string) {
 }
 
 function saveSoon(id: string, delay = 1200) {
-  if (saveTimers.has(id)) return;
+  if (saveTimers.has(id) || privateIds.has(id)) return;
   saveTimers.set(
     id,
     setTimeout(() => {
@@ -149,7 +225,7 @@ async function saveNow(id: string) {
     saveTimers.delete(id);
   }
   const c = live.get(id);
-  if (!c) return;
+  if (!c || privateIds.has(id)) return;
   try {
     await repo.save(c);
     refreshMetas();
@@ -167,22 +243,6 @@ function nextMessageTime(c: Conversation): number {
   return Math.max(Date.now(), (last?.createdAt ?? 0) + 1);
 }
 
-function patchMessage(c: Conversation, messageId: string, patch: Partial<Message> | ((m: Message) => Partial<Message>)) {
-  const i = c.messages.findIndex((m) => m.id === messageId);
-  if (i < 0) return;
-  const old = c.messages[i];
-  const p = typeof patch === "function" ? patch(old) : patch;
-  c.messages[i] = { ...old, ...p, updatedAt: Math.max(Date.now(), old.updatedAt + 1) };
-  touch(c);
-  render(c.id);
-}
-
-function patchToolCall(c: Conversation, messageId: string, callId: string, patch: Partial<Extract<Part, { type: "tool_call" }>>) {
-  patchMessage(c, messageId, (m) => ({
-    parts: m.parts.map((p) => (p.type === "tool_call" && p.id === callId ? { ...p, ...patch } : p)),
-  }));
-}
-
 function setBusy(id: string, note: string | null) {
   set((s) => {
     const busy = { ...s.busy };
@@ -192,26 +252,45 @@ function setBusy(id: string, note: string | null) {
   });
 }
 
-// ---------- startup ----------
+export const getSecretValue = (name: string) => getSecret(name);
+
+// ---------------------------------------------------------------- startup
+
+const startupHooks: (() => void | Promise<void>)[] = [];
+/** Modules that need to run after the stores are ready (automations, connectors) register here. */
+export function onReady(fn: () => void | Promise<void>) {
+  if (get().ready) void fn();
+  else startupHooks.push(fn);
+}
 
 export async function init() {
   const p = await initPlatform();
   kv = isTauri && p.dataDir ? new FsKV(joinPath(p.dataDir, "store")) : new IdbKV();
   repo = new Repo(kv);
-  await repo.init();
+  library = new Library(kv);
+  await Promise.all([repo.init(), library.init()]);
   let settings = defaultSettings();
+  let fresh = true;
   try {
     const raw = await kv.getText("settings.json");
-    if (raw) settings = migrateSettings(JSON.parse(raw));
+    if (raw) {
+      settings = migrateSettings(JSON.parse(raw));
+      fresh = false;
+    }
   } catch {
     /* fall back to defaults */
   }
-  // computer tools exist only on desktop builds
   if (!p.desktop) settings.tools.computer = false;
+  if (!settings.deviceName) settings.deviceName = p.hostname || p.os;
+  library.onChange(() => refreshLib());
+  refreshLib();
   set({ settings, metas: repo.list(), ready: true, sync: { state: syncTarget(settings) ? "idle" : "off", target: syncTarget(settings)?.label } });
   applyTheme(settings.theme);
-  const first = repo.list()[0];
+  applyAppearance(settings);
+  if (fresh) await kv.setText("settings.json", JSON.stringify(settings));
+  const first = repo.list().find((m) => !m.archived);
   if (first) await openChat(first.id);
+  for (const fn of startupHooks.splice(0)) void fn();
   void syncNow(true);
   setInterval(() => {
     if (get().settings.sync.auto) void syncNow(true);
@@ -229,17 +308,29 @@ export function applyTheme(theme: Settings["theme"]) {
   else document.documentElement.setAttribute("data-theme", theme);
 }
 
+export function applyAppearance(s: Settings) {
+  if (typeof document === "undefined") return;
+  document.documentElement.style.setProperty("--font-size", `${s.appearance.fontSize}px`);
+  document.documentElement.dataset.width = s.appearance.width;
+}
+
 export async function updateSettings(patch: Partial<Settings> | ((s: Settings) => Partial<Settings>)) {
   const cur = get().settings;
   const next = { ...cur, ...(typeof patch === "function" ? patch(cur) : patch) };
   set({ settings: next });
   if (next.theme !== cur.theme) applyTheme(next.theme);
+  if (next.appearance !== cur.appearance) applyAppearance(next);
   const target = syncTarget(next);
   if (get().sync.target !== target?.label) set({ sync: { state: target ? "idle" : "off", target: target?.label } });
   await kv.setText("settings.json", JSON.stringify(next));
 }
 
-// ---------- providers & keys ----------
+export function setView(view: View) {
+  set({ view });
+  if (typeof window !== "undefined" && window.innerWidth <= 860) set({ sidebarOpen: false });
+}
+
+// ---------------------------------------------------------------- providers & keys
 
 export async function getKey(providerId: string): Promise<string> {
   if (keyCache.has(providerId)) return keyCache.get(providerId)!;
@@ -266,19 +357,57 @@ export async function refreshModels(providerId: string): Promise<number> {
   return fresh.length;
 }
 
-export function currentModelRef(conv?: Conversation | null): ModelRef | undefined {
-  const s = get().settings;
-  const candidates = [conv?.model, conv ? undefined : get().draft.model, s.defaultModel];
-  for (const ref of candidates) if (findModel(s, ref)) return ref;
-  for (const p of s.providers) {
-    if (!p.enabled) continue;
-    const m = p.models.find((x) => x.kind === "chat");
-    if (m) return { providerId: p.id, modelId: m.id };
-  }
-  return undefined;
+/** Add a model the provider does not list (for example one that is cold and needs waking up). */
+export async function addManualModel(providerId: string, modelId: string, kind?: "chat" | "image" | "video") {
+  const id = modelId.trim();
+  if (!id) return;
+  await updateSettings((s) => ({
+    providers: s.providers.map((p) => (p.id !== providerId ? p : { ...p, models: [manualModel(id, kind), ...p.models.filter((m) => m.id !== id)] })),
+  }));
 }
 
-// ---------- conversations ----------
+export async function removeModel(providerId: string, modelId: string) {
+  await updateSettings((s) => ({ providers: s.providers.map((p) => (p.id === providerId ? { ...p, models: p.models.filter((m) => m.id !== modelId) } : p)) }));
+}
+
+const wakes = new Map<string, AbortController>();
+
+export async function wakeUp(providerId: string, modelId: string, onStatus: (note: string) => void): Promise<WakeResult> {
+  const found = findModel(get().settings, { providerId, modelId });
+  if (!found) throw new Error("That model is not in the list.");
+  wakes.get(`${providerId}::${modelId}`)?.abort();
+  const abort = new AbortController();
+  wakes.set(`${providerId}::${modelId}`, abort);
+  try {
+    return await wakeModel(found.provider, await getKey(providerId), found.model, { signal: abort.signal, onStatus });
+  } finally {
+    wakes.delete(`${providerId}::${modelId}`);
+  }
+}
+
+export function cancelWake(providerId: string, modelId: string) {
+  wakes.get(`${providerId}::${modelId}`)?.abort();
+}
+
+export function currentModelRef(conv?: Conversation | null): ModelRef | undefined {
+  const s = get().settings;
+  if (conv) {
+    const { agent, project } = contextOf(host, conv);
+    return currentRef(s, conv, agent, project);
+  }
+  const d = get().draft;
+  const agent = library?.get("agents", d.agentId);
+  const project = library?.get("projects", d.projectId);
+  const pseudo = { model: d.model } as Conversation;
+  return currentRef(s, pseudo, agent, project);
+}
+
+export async function toggleFavorite(ref: ModelRef) {
+  const key = `${ref.providerId}::${ref.modelId}`;
+  await updateSettings((s) => ({ favorites: s.favorites.includes(key) ? s.favorites.filter((k) => k !== key) : [...s.favorites, key] }));
+}
+
+// ---------------------------------------------------------------- conversations
 
 export async function openChat(id: string) {
   let c = live.get(id);
@@ -288,12 +417,21 @@ export async function openChat(id: string) {
     c = loaded;
     live.set(id, c);
   }
-  set({ activeId: id, active: { ...c, messages: c.messages.slice() }, paramsOpen: false });
+  set({ activeId: id, active: { ...c, messages: c.messages.slice() }, paramsOpen: false, view: { name: "chat" }, incognito: privateIds.has(id), compareOpen: null });
   if (typeof window !== "undefined" && window.innerWidth <= 860) set({ sidebarOpen: false });
 }
 
-export function newChat() {
-  set({ activeId: null, active: null, paramsOpen: false, draft: {} });
+export function newChat(opts: { agentId?: string; projectId?: string; incognito?: boolean; mode?: "chat" | "research" } = {}) {
+  const project = opts.projectId ? library.get("projects", opts.projectId) : undefined;
+  set({
+    activeId: null,
+    active: null,
+    paramsOpen: false,
+    draft: { agentId: opts.agentId ?? project?.agentId, projectId: opts.projectId, mode: opts.mode, workFolder: project?.workFolder },
+    view: { name: "chat" },
+    incognito: !!opts.incognito,
+    compareOpen: null,
+  });
   if (typeof window !== "undefined" && window.innerWidth <= 860) set({ sidebarOpen: false });
 }
 
@@ -301,33 +439,50 @@ function ensureConversation(): Conversation {
   const id = get().activeId;
   if (id && live.has(id)) return live.get(id)!;
   const c = emptyConversation(uid("c"), Date.now());
-  const d = draft();
-  c.model = d.model ?? currentModelRef(null);
+  const d = get().draft;
+  c.model = d.model;
   c.params = d.params;
   c.media = d.media;
   c.chatModel = d.chatModel;
+  c.agentId = d.agentId;
+  c.projectId = d.projectId;
+  c.mode = d.mode;
+  c.workFolder = d.workFolder;
+  if (!c.model) {
+    const agent = library.get("agents", c.agentId);
+    const project = library.get("projects", c.projectId);
+    if (!agent?.model && !project?.model) c.model = currentModelRef(null);
+  }
+  if (get().incognito) privateIds.add(c.id);
   set({ draft: {} });
   live.set(c.id, c);
   set({ activeId: c.id, active: { ...c } });
   return c;
 }
 
-const draft = () => get().draft;
 const setDraft = (patch: Partial<Draft>) => set((s) => ({ draft: { ...s.draft, ...patch } }));
-export const draftModel = () => draft().model;
-export const draftParams = () => draft().params;
-export const draftMedia = () => draft().media;
+
+/** Change something about the open chat (or the draft, when no chat exists yet). */
+function patchChat(patch: Partial<Conversation>, draftPatch?: Partial<Draft>) {
+  const c = live.get(get().activeId ?? "");
+  if (!c) {
+    setDraft((draftPatch ?? patch) as Partial<Draft>);
+    return;
+  }
+  Object.assign(c, patch);
+  touch(c);
+  render(c.id);
+  saveSoon(c.id, 300);
+}
 
 export async function setChatModel(ref: ModelRef) {
   const settings = get().settings;
   const kind = findModel(settings, ref)?.model.kind ?? "chat";
-  const id = get().activeId;
-  const c = id ? live.get(id) : undefined;
-  const current = c ? c.model : draft().model;
-  // remember the chat model so the Chat button can switch back after making pictures
+  const c = live.get(get().activeId ?? "");
+  const current = currentModelRef(c ?? null);
   const curKind = findModel(settings, current)?.model.kind ?? "chat";
   if (!c) {
-    setDraft({ model: ref, ...(kind !== "chat" && curKind === "chat" ? { chatModel: current ?? currentModelRef(null) } : {}) });
+    setDraft({ model: ref, ...(kind !== "chat" && curKind === "chat" ? { chatModel: current } : {}) });
   } else {
     if (kind !== "chat" && curKind === "chat") c.chatModel = current;
     c.model = ref;
@@ -340,16 +495,12 @@ export async function setChatModel(ref: ModelRef) {
   else await updateSettings({ videoModel: ref });
 }
 
-export function currentKind(conv?: Conversation | null): "chat" | "image" | "video" {
-  return findModel(get().settings, conv ? currentModelRef(conv) : (draft().model ?? currentModelRef(null)))?.model.kind ?? "chat";
-}
-
 /** Chat / Image / Video switch in the composer. */
 export async function setChatMode(mode: "chat" | "image" | "video"): Promise<boolean> {
   const settings = get().settings;
   const c = live.get(get().activeId ?? "");
   if (mode === "chat") {
-    const back = (c ? c.chatModel : draft().chatModel) ?? settings.defaultModel;
+    const back = (c ? c.chatModel : get().draft.chatModel) ?? settings.defaultModel;
     const ref = back && findModel(settings, back)?.model.kind === "chat" ? back : undefined;
     const fallback = ref ?? settings.providers.flatMap((p) => p.models.filter((m) => m.kind === "chat").map((m) => ({ providerId: p.id, modelId: m.id })))[0];
     if (!fallback) return false;
@@ -365,85 +516,83 @@ export async function setChatMode(mode: "chat" | "image" | "video"): Promise<boo
   return true;
 }
 
-export async function setChatMedia(media: MediaOptions) {
-  const c = live.get(get().activeId ?? "");
-  if (!c) {
-    setDraft({ media });
-    return;
-  }
-  c.media = media;
-  touch(c);
-  render(c.id);
-  saveSoon(c.id, 300);
+export const setChatMedia = (media: MediaOptions) => patchChat({ media });
+export const setChatParams = (params: ModelParams | undefined) => patchChat({ params: params && Object.keys(params).length ? params : undefined });
+export const setChatSystemPrompt = (text: string) => patchChat({ systemPrompt: text || undefined });
+export const setResearchMode = (on: boolean) => patchChat({ mode: on ? "research" : undefined }, { mode: on ? "research" : undefined });
+export const setWorkFolder = (folder: string | undefined) => patchChat({ workFolder: folder });
+export const setChatAgent = (agentId: string | undefined) => patchChat({ agentId });
+
+/** Put files (or text) into the composer. */
+export function attachToComposer(refs: BlobRef[], text?: string) {
+  set((s) => ({
+    composerInbox: { parts: refs.map((r) => ({ type: "attachment" as const, blobId: r.blobId, name: r.name, mime: r.mime, size: r.size })), text, seq: s.composerInbox.seq + 1 },
+  }));
 }
 
-/** Put files into the composer (used by "Edit" / "Animate" on generated pictures). */
-export function attachToComposer(refs: BlobRef[]) {
-  set((s) => ({ composerInbox: { parts: refs.map((r) => ({ type: "attachment" as const, blobId: r.blobId, name: r.name, mime: r.mime, size: r.size })), seq: s.composerInbox.seq + 1 } }));
-}
-
-export async function setChatParams(params: ModelParams | undefined) {
-  const id = get().activeId;
-  const c = id ? live.get(id) : undefined;
-  if (!c) {
-    setDraft({ params });
-    return;
-  }
-  c.params = params && Object.keys(params).length ? params : undefined;
-  touch(c);
-  render(c.id);
-  saveSoon(c.id, 300);
-}
-
-export async function setChatSystemPrompt(text: string) {
-  const c = ensureConversation();
-  c.systemPrompt = text || undefined;
-  touch(c);
-  render(c.id);
-  saveSoon(c.id, 300);
-}
-
-export async function renameChat(id: string, title: string) {
+async function withConv(id: string, fn: (c: Conversation) => void | Promise<void>) {
   const c = live.get(id) ?? (await repo.get(id));
   if (!c) return;
-  c.title = title.trim() || "Untitled chat";
-  touch(c);
   live.set(id, c);
+  await fn(c);
+  touch(c);
   render(id);
   await saveNow(id);
 }
 
-export async function togglePin(id: string) {
-  const c = live.get(id) ?? (await repo.get(id));
-  if (!c) return;
-  c.pinned = !c.pinned;
-  touch(c);
-  live.set(id, c);
-  await saveNow(id);
-}
+export const renameChat = (id: string, title: string) => withConv(id, (c) => void (c.title = title.trim() || "Untitled chat"));
+export const togglePin = (id: string) => withConv(id, (c) => void (c.pinned = !c.pinned));
+export const setArchived = (id: string, archived: boolean) => withConv(id, (c) => void (c.archived = archived || undefined));
+export const moveToProject = (id: string, projectId: string | undefined) => withConv(id, (c) => void (c.projectId = projectId));
+export const setTags = (id: string, tags: string[]) => withConv(id, (c) => void (c.tags = tags.length ? tags : undefined));
 
 export async function deleteChat(id: string) {
   stop(id);
   const doomed = live.get(id) ?? (await repo.get(id));
   live.delete(id);
-  await repo.delete(id);
-  // free the chat's attachments and generated files on this device
-  if (doomed) {
-    for (const ref of blobRefsOf(doomed)) await kv.remove(blobKey(ref.blobId)).catch(() => undefined);
+  if (privateIds.has(id)) {
+    privateIds.delete(id);
+  } else {
+    await repo.delete(id);
+    if (doomed) for (const ref of blobRefsOf(doomed)) await kv.remove(blobKey(ref.blobId)).catch(() => undefined);
   }
   refreshMetas();
   if (get().activeId === id) set({ activeId: null, active: null });
   scheduleSync();
 }
 
-// ---------- attachments ----------
+/** Make the open private chat a normal saved chat. */
+export async function keepPrivateChat() {
+  const id = get().activeId;
+  if (!id || !privateIds.has(id)) return;
+  privateIds.delete(id);
+  set({ incognito: false });
+  await saveNow(id);
+}
+
+/** A new chat with the messages up to and including `messageId`. */
+export async function forkChat(messageId: string) {
+  const c = live.get(get().activeId ?? "");
+  if (!c) return;
+  const i = c.messages.findIndex((m) => m.id === messageId);
+  if (i < 0) return;
+  const now = Date.now();
+  const fork = emptyConversation(uid("c"), now);
+  Object.assign(fork, { title: `${c.title} (fork)`, model: c.model, params: c.params, agentId: c.agentId, projectId: c.projectId, systemPrompt: c.systemPrompt, workFolder: c.workFolder, forkedFrom: { convId: c.id, messageId } });
+  fork.messages = c.messages.slice(0, i + 1).map((m, k) => ({ ...structuredClone(m), id: uid("m"), createdAt: now + k, updatedAt: now + k }));
+  live.set(fork.id, fork);
+  await repo.save(fork);
+  refreshMetas();
+  await openChat(fork.id);
+  toast("Forked into a new chat.", "ok");
+}
+
+// ---------------------------------------------------------------- attachments
 
 export async function attachFile(file: File): Promise<Extract<Part, { type: "attachment" }>> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const mime = file.type || mimeFromName(file.name);
-  if (bytes.length > 30 * 1024 * 1024) {
-    toast(`${file.name} is ${formatBytes(bytes.length)}. Most providers reject requests above about 30 MB, so this may fail.`, "info");
-  }
+  if (bytes.length > 30 * 1024 * 1024) toast(`${file.name} is ${formatBytes(bytes.length)}. Most providers reject requests above about 30 MB, so this may fail.`, "info");
   const ref = await repo.putBlob(bytes, mime, file.name || "file");
   const part: Extract<Part, { type: "attachment" }> = { type: "attachment", ...ref };
   if (!mime.startsWith("image/") && mime !== "application/pdf" && !mime.startsWith("video/") && !mime.startsWith("audio/")) {
@@ -453,6 +602,17 @@ export async function attachFile(file: File): Promise<Extract<Part, { type: "att
     if (ex.note) toast(ex.note, "error");
   }
   return part;
+}
+
+/** A knowledge file: stored with its extracted text so it can be searched. */
+export async function makeKnowledgeFile(file: File): Promise<KnowledgeFile> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const mime = file.type || mimeFromName(file.name);
+  const ref = await repo.putBlob(bytes, mime, file.name || "file");
+  const ex = await extractText(bytes, file.name, mime);
+  if (ex.text == null) throw new Error(`${file.name}: ${ex.note ?? "no readable text in this file"}`);
+  const textRef = await repo.putBlob(utf8.encode(ex.text), "text/plain", `${file.name}.txt`);
+  return { ...ref, textBlobId: textRef.blobId, chars: ex.text.length, addedAt: Date.now() };
 }
 
 const blobs: BlobAccess = {
@@ -469,69 +629,7 @@ const blobs: BlobAccess = {
   put: (bytes, mime, name) => repo.putBlob(bytes, mime, name),
 };
 
-// ---------- sending ----------
-
-export async function send(text: string, attachments: Part[] = []) {
-  const trimmed = text.trim();
-  if (!trimmed && !attachments.length) return;
-  const c = ensureConversation();
-  if (get().busy[c.id] !== undefined) return;
-  const now = nextMessageTime(c);
-  const parts: Part[] = [...attachments];
-  if (trimmed) parts.push({ type: "text", text: trimmed });
-  c.messages.push({ id: uid("m"), role: "user", createdAt: now, updatedAt: now, parts });
-  if (c.messages.length === 1) {
-    const base = trimmed || (attachments[0] as BlobRef | undefined)?.name || "New chat";
-    c.title = base.split("\n")[0].slice(0, 60);
-  }
-  touch(c);
-  render(c.id);
-  await saveNow(c.id);
-  await runAgent(c.id);
-}
-
-export function stop(convId?: string | null) {
-  const id = convId ?? get().activeId;
-  if (!id) return;
-  aborts.get(id)?.abort();
-  const perm = get().permission;
-  if (perm?.convId === id) perm.resolve("deny");
-}
-
-/** Drop everything after the last user message and answer it again. */
-export async function regenerate() {
-  const c = live.get(get().activeId ?? "");
-  if (!c || get().busy[c.id] !== undefined) return;
-  let i = c.messages.length - 1;
-  while (i >= 0 && c.messages[i].role !== "user") i--;
-  if (i < 0) return;
-  removeAfter(c, i);
-  render(c.id);
-  await runAgent(c.id);
-}
-
-/** Replace a user message's text, drop what followed, and answer again. */
-export async function editAndResend(messageId: string, text: string) {
-  const c = live.get(get().activeId ?? "");
-  if (!c || get().busy[c.id] !== undefined) return;
-  const i = c.messages.findIndex((m) => m.id === messageId);
-  if (i < 0 || c.messages[i].role !== "user") return;
-  const old = c.messages[i];
-  removeAfter(c, i - 1);
-  const now = nextMessageTime(c);
-  const parts: Part[] = [...old.parts.filter((p) => p.type === "attachment"), { type: "text", text: text.trim() }];
-  c.messages.push({ id: uid("m"), role: "user", createdAt: now, updatedAt: now, parts });
-  touch(c);
-  render(c.id);
-  await runAgent(c.id);
-}
-
-function removeAfter(c: Conversation, index: number) {
-  const now = Date.now();
-  for (const m of c.messages.slice(index + 1)) c.removed[m.id] = now;
-  c.messages = c.messages.slice(0, index + 1);
-  touch(c);
-}
+// ---------------------------------------------------------------- engine host
 
 function askPermission(convId: string, tool: Tool, input: Record<string, unknown>): Promise<"deny" | "once" | "always"> {
   return new Promise((resolve) => {
@@ -552,56 +650,201 @@ function askPermission(convId: string, tool: Tool, input: Record<string, unknown
   });
 }
 
-function toolContext(c: Conversation, signal: AbortSignal): ToolContext {
-  return {
-    conversationId: c.id,
-    signal,
-    settings: get().settings,
-    saveBlob: (bytes, mime, name) => repo.putBlob(bytes, mime, name),
-    loadBlob: (id) => repo.getBlob(id),
-    files: () =>
-      c.messages.flatMap((m) =>
-        m.parts.flatMap((p) => (p.type === "attachment" || p.type === "artifact" ? [{ blobId: p.blobId, name: p.name, mime: p.mime, size: p.size, kind: p.type }] : [])),
-      ),
-    userText: () =>
-      c.messages
-        .filter((m) => m.role === "user")
-        .flatMap((m) => m.parts.map((p) => (p.type === "text" ? p.text : "")))
-        .join("\n"),
-    getKey,
-    progress: (note) => setBusy(c.id, note),
-  };
+function askQuestion(convId: string, question: string, options: string[], multiple: boolean): Promise<string | null> {
+  return new Promise((resolve) => {
+    const req: QuestionRequest = {
+      id: uid("q"),
+      convId,
+      question,
+      options,
+      multiple,
+      resolve: (a) => {
+        if (get().question?.id === req.id) set({ question: null });
+        resolve(a);
+      },
+    };
+    set({ question: req });
+    if (document.visibilityState === "hidden" && get().settings.notifications) void notify("Meridian needs your answer", question);
+  });
 }
 
-/** A turn in a chat whose model is an image or video model: the last message is the prompt. */
-async function runMediaTurn(c: Conversation, ref: ModelRef, kind: "image" | "video", modelName: string, signal: AbortSignal, onId: (id: string) => void) {
-  const lastUser = [...c.messages].reverse().find((m) => m.role === "user");
-  if (!lastUser) return;
-  const prompt = lastUser.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n").trim();
-  const inputs = lastUser.parts.filter((p): p is Extract<Part, { type: "attachment" }> => p.type === "attachment" && p.mime.startsWith("image/"));
-  if (!prompt) throw new Error(kind === "image" ? "Describe the picture you want." : "Describe the video you want.");
+/** Connector servers: the user's own plus those that came with enabled plugins. */
+export function allConnectors(settings: Settings): McpServerConfig[] {
+  const fromPlugins = library
+    ? library.list("plugins").flatMap((p) => p.mcpServers.map((m) => ({ ...m, enabled: p.enabled, pluginId: p.id, name: m.name })))
+    : [];
+  return [...settings.mcpServers, ...fromPlugins];
+}
+
+export const host: EngineHost = {
+  settings: () => get().settings,
+  get library() {
+    return library;
+  },
+  get repo() {
+    return repo;
+  },
+  blobs,
+  getKey,
+  getSecret: (name) => getSecret(name),
+  connectorTools: (settings) => mcpManager.tools(allConnectors(settings)),
+  render: (c) => render(c.id),
+  save: (c, soon) => (soon ? saveSoon(c.id, 3000) : saveNow(c.id)),
+  setBusy,
+  askPermission,
+  ask: askQuestion,
+  allowAlways: (name) => updateSettings((cur) => ({ alwaysAllow: [...new Set([...cur.alwaysAllow, name])] })),
+  notice: (text) => toast(text, "info"),
+};
+
+// ---------------------------------------------------------------- sending
+
+export async function send(text: string, attachments: Part[] = [], opts: { compare?: ModelRef[] } = {}) {
+  const trimmed = text.trim();
+  if (!trimmed && !attachments.length) return;
+  const c = ensureConversation();
+  if (get().busy[c.id] !== undefined) return;
   const now = nextMessageTime(c);
-  const assistant: Message = { id: uid("m"), role: "assistant", createdAt: now, updatedAt: now, parts: [], model: ref };
-  onId(assistant.id);
-  c.messages.push(assistant);
+  const parts: Part[] = [...attachments];
+  if (trimmed) parts.push({ type: "text", text: trimmed });
+  const userMsg: Message = { id: uid("m"), role: "user", createdAt: now, updatedAt: now, parts };
+  c.messages.push(userMsg);
+  if (c.messages.length === 1) {
+    const base = trimmed || (attachments[0] as BlobRef | undefined)?.name || "New chat";
+    c.title = base.split("\n")[0].slice(0, 60);
+  }
+  touch(c);
   render(c.id);
-  setBusy(c.id, kind === "image" ? (inputs.length ? "editing image" : "creating image") : "starting video");
-  const { refs } = await createMedia(
-    { kind, prompt, inputs, options: c.media, model: ref },
-    {
-      settings: get().settings,
-      getKey,
-      loadBlob: (id) => repo.getBlob(id),
-      saveBlob: (bytes, mime, name) => repo.putBlob(bytes, mime, name),
-      signal,
-      progress: (note) => setBusy(c.id, note),
-    },
-  );
-  patchMessage(c, assistant.id, {
-    parts: refs.map((r) => ({ type: "artifact" as const, origin: "model" as const, ...r })),
-    stopReason: "end",
-  });
-  void modelName;
+  await saveNow(c.id);
+  if (opts.compare?.length) {
+    set({ compareOpen: userMsg.id });
+    await Promise.all([runAgent(c.id), ...opts.compare.map((ref) => runAlternate(c, userMsg.id, ref))]);
+  } else {
+    await runAgent(c.id);
+  }
+}
+
+/** One extra answer to the same question from another model, kept as a version. */
+async function runAlternate(c: Conversation, userMsgId: string, ref: ModelRef) {
+  const idx = c.messages.findIndex((m) => m.id === userMsgId);
+  const clone: Conversation = { ...structuredClone({ ...c, messages: c.messages.slice(0, idx + 1) }), model: ref };
+  const abort = new AbortController();
+  const key = `${c.id}|${ref.providerId}::${ref.modelId}`;
+  aborts.set(key, abort);
+  const versionId = uid("v");
+  const update = () => {
+    const msgs = clone.messages.slice(idx + 1);
+    const list = (c.alternates ??= {})[userMsgId] ?? (c.alternates[userMsgId] = []);
+    const existing = list.find((v) => v.id === versionId);
+    if (existing) existing.messages = msgs;
+    else list.push({ id: versionId, createdAt: Date.now(), messages: msgs });
+    touch(c);
+    render(c.id);
+  };
+  const altHost: EngineHost = { ...host, render: () => update(), save: () => undefined, setBusy: () => undefined };
+  try {
+    await runTurn(altHost, clone, { signal: abort.signal, noTools: true, model: ref });
+  } catch (e) {
+    const now = Date.now();
+    clone.messages.push({ id: uid("m"), role: "assistant", createdAt: now, updatedAt: now, parts: [], model: ref, error: errText(e) });
+  } finally {
+    aborts.delete(key);
+    update();
+    await saveNow(c.id);
+  }
+}
+
+export function stop(convId?: string | null) {
+  const id = convId ?? get().activeId;
+  if (!id) return;
+  for (const [k, a] of aborts) if (k === id || k.startsWith(`${id}|`)) a.abort();
+  const perm = get().permission;
+  if (perm?.convId === id) perm.resolve("deny");
+  const q = get().question;
+  if (q?.convId === id) q.resolve(null);
+}
+
+function lastUserIndex(c: Conversation): number {
+  let i = c.messages.length - 1;
+  while (i >= 0 && c.messages[i].role !== "user") i--;
+  return i;
+}
+
+/** Keep the current answer as a version and ask again (optionally with another model). */
+export async function regenerate(model?: ModelRef) {
+  const c = live.get(get().activeId ?? "");
+  if (!c || get().busy[c.id] !== undefined) return;
+  const i = lastUserIndex(c);
+  if (i < 0) return;
+  stashTurn(c, i);
+  if (model) c.model = model;
+  render(c.id);
+  await runAgent(c.id);
+}
+
+/** Move the answer after user message i into the version list. */
+function stashTurn(c: Conversation, i: number) {
+  const userId = c.messages[i].id;
+  const after = c.messages.slice(i + 1);
+  if (after.length) {
+    const list = ((c.alternates ??= {})[userId] ??= []);
+    list.push({ id: uid("v"), createdAt: Date.now(), messages: after });
+  }
+  const now = Date.now();
+  for (const m of after) c.removed[m.id] = now;
+  c.messages = c.messages.slice(0, i + 1);
+  touch(c);
+}
+
+/** Show an earlier version of the answer to user message `userId`. */
+export async function selectVersion(userId: string, versionId: string) {
+  const c = live.get(get().activeId ?? "");
+  if (!c || get().busy[c.id] !== undefined) return;
+  const i = c.messages.findIndex((m) => m.id === userId);
+  const list = c.alternates?.[userId];
+  const chosen = list?.find((v) => v.id === versionId);
+  if (i < 0 || !list || !chosen) return;
+  // only the last turn can switch (later messages depend on it)
+  if (c.messages.slice(i + 1).some((m) => m.role === "user")) {
+    toast("Only the latest answer can be switched. Fork the chat to continue from an older one.", "info");
+    return;
+  }
+  stashTurn(c, i);
+  c.alternates![userId] = c.alternates![userId].filter((v) => v.id !== versionId);
+  // fresh ids, so deletes of the old copies on other devices do not remove them
+  const now = Date.now();
+  c.messages.push(...chosen.messages.map((m, k) => ({ ...structuredClone(m), id: uid("m"), createdAt: now + k, updatedAt: now + k })));
+  touch(c);
+  render(c.id);
+  await saveNow(c.id);
+}
+
+/** Replace a user message's text, keep the old exchange as a version, and answer again. */
+export async function editAndResend(messageId: string, text: string) {
+  const c = live.get(get().activeId ?? "");
+  if (!c || get().busy[c.id] !== undefined) return;
+  const i = c.messages.findIndex((m) => m.id === messageId);
+  if (i < 0 || c.messages[i].role !== "user") return;
+  const old = c.messages[i];
+  const now = Date.now();
+  for (const m of c.messages.slice(i)) c.removed[m.id] = now;
+  c.messages = c.messages.slice(0, i);
+  const t = nextMessageTime(c);
+  const parts: Part[] = [...old.parts.filter((p) => p.type === "attachment"), { type: "text", text: text.trim() }];
+  c.messages.push({ id: uid("m"), role: "user", createdAt: t, updatedAt: t, parts });
+  touch(c);
+  render(c.id);
+  await runAgent(c.id);
+}
+
+export async function deleteMessage(messageId: string) {
+  const c = live.get(get().activeId ?? "");
+  if (!c || get().busy[c.id] !== undefined) return;
+  c.messages = c.messages.filter((m) => m.id !== messageId);
+  c.removed[messageId] = Date.now();
+  touch(c);
+  render(c.id);
+  await saveNow(c.id);
 }
 
 async function runAgent(convId: string) {
@@ -610,185 +853,203 @@ async function runAgent(convId: string) {
   const abort = new AbortController();
   aborts.set(convId, abort);
   setBusy(convId, "");
-  let assistantId: string | null = null;
-
+  const firstAnswer = c.messages.filter((m) => m.role === "assistant").length === 0;
   try {
-    const maxSteps = Math.max(1, get().settings.maxAgentSteps);
-    for (let step = 0; ; step++) {
-      const settings = get().settings;
-      const ref = currentModelRef(c);
-      const found = findModel(settings, ref);
-      if (!found) throw new Error("No model is selected. Add an API key in Settings → Providers and pick a model.");
-      const { provider, model } = found;
-      if (model.kind !== "chat") {
-        await runMediaTurn(c, ref!, model.kind, model.name, abort.signal, (id) => (assistantId = id));
-        break;
-      }
-      const apiKey = await getKey(provider.id);
-      if (!apiKey && provider.kind !== "openai-compatible") {
-        throw new Error(`No API key for ${provider.name}. Add one in Settings → Providers.`);
-      }
-
-      // PDFs for a model that cannot read them natively: extract the text once, on the device
-      if (!model.caps.pdf) {
-        for (const m of c.messages) {
-          for (const p of m.parts) {
-            if (p.type === "attachment" && p.mime === "application/pdf" && p.extractedText === undefined) {
-              setBusy(convId, `reading ${p.name}`);
-              const bytes = await repo.getBlob(p.blobId);
-              const ex = bytes ? await extractText(bytes, p.name, p.mime) : { text: null, truncated: false };
-              p.extractedText = ex.text ?? "";
-              if (ex.truncated) toast(`${p.name} is very long. Only the first part of its text will be sent.`, "info");
-            }
-          }
-        }
-      }
-
-      setBusy(convId, step === 0 ? "" : "thinking");
-      const tools = await activeTools(settings, model);
-      const params = supportedParams(resolveParams(settings, ref, c), provider.kind, model);
-      let history = c.messages;
-      if (params.contextMessages && history.length > params.contextMessages) {
-        let start = history.length - params.contextMessages;
-        while (start > 0 && history[start].role !== "user") start--; // never start mid tool exchange
-        history = history.slice(start);
-      }
-      const sendHistory = history.slice();
-
-      const now = nextMessageTime(c);
-      const assistant: Message = { id: uid("m"), role: "assistant", createdAt: now, updatedAt: now, parts: [], model: ref };
-      assistantId = assistant.id;
-      c.messages.push(assistant);
-      render(convId);
-
-      const result = await adapterFor(provider.kind).chat({
-        provider,
-        apiKey,
-        model,
-        system: buildSystemPrompt(settings, c, tools),
-        messages: sendHistory,
-        tools: tools.map((t) => t.spec),
-        options: { params, webSearch: settings.webSearch && settings.tools.web, refusalFallback: settings.refusalFallback },
-        signal: abort.signal,
-        onUpdate: (parts) => {
-          patchMessage(c, assistant.id, { parts });
-          saveSoon(convId, 4000);
-        },
-        blobs,
-      });
-
-      patchMessage(c, assistant.id, {
-        parts: result.parts,
-        raw: result.raw,
-        usage: result.usage,
-        stopReason: result.stop,
-        error: result.stop === "refusal" || result.stop === "max_tokens" ? result.stopDetail : undefined,
-        model: result.servedBy ? { providerId: provider.id, modelId: result.servedBy } : ref,
-      });
-      saveSoon(convId);
-
-      if (result.stop === "pause") continue; // a hosted tool paused the turn: ask the model to carry on
-      const calls = result.parts.filter((p): p is Extract<Part, { type: "tool_call" }> => p.type === "tool_call" && !p.server);
-      if (result.stop === "refusal" || result.stop === "max_tokens") {
-        // a cut-off turn can leave half-written tool inputs: never run them
-        for (const call of calls) {
-          patchToolCall(c, assistant.id, call.id, { status: "error", result: { text: "Not run: the model's turn was cut off before this call was complete.", isError: true } });
-        }
-        break;
-      }
-      if (!calls.length) break;
-
-      for (const call of calls) {
-        if (abort.signal.aborted) throw new DOMException("Aborted", "AbortError");
-        const tool = tools.find((t) => t.spec.name === call.name);
-        const input = (call.input && typeof call.input === "object" ? call.input : {}) as Record<string, unknown>;
-        let res: ToolResultData;
-        let artifacts: BlobRef[] = [];
-        if (!tool) {
-          res = { text: `There is no tool named "${call.name}".`, isError: true };
-        } else {
-          const invalid = validateInput(tool.spec.inputSchema, call.input);
-          const ctx = toolContext(c, abort.signal);
-          if (invalid) {
-            res = { text: `Invalid input: ${invalid}. Fix the arguments and call the tool again.`, isError: true };
-          } else {
-            let allowed = true;
-            const s = get().settings;
-            const preApproved = s.alwaysAllow.includes(tool.spec.name) || (tool.group === "computer" && s.autoApproveComputer);
-            if (tool.needsApproval(input, ctx) && !preApproved) {
-              setBusy(convId, "waiting for your OK");
-              const decision = await askPermission(convId, tool, input);
-              if (decision === "always") await updateSettings((cur) => ({ alwaysAllow: [...new Set([...cur.alwaysAllow, tool.spec.name])] }));
-              allowed = decision !== "deny";
-            }
-            if (abort.signal.aborted) throw new DOMException("Aborted", "AbortError");
-            if (!allowed) {
-              patchToolCall(c, assistant.id, call.id, { status: "denied", result: { text: "The user declined to run this tool.", isError: true } });
-              continue;
-            }
-            patchToolCall(c, assistant.id, call.id, { status: "running" });
-            setBusy(convId, tool.title);
-            try {
-              const out = await tool.run(input, ctx);
-              res = { text: out.text, isError: out.isError, images: out.images };
-              artifacts = out.artifacts ?? [];
-            } catch (e) {
-              if (isAbort(e) || abort.signal.aborted) throw new DOMException("Aborted", "AbortError");
-              res = { text: `The tool failed: ${errText(e)}`, isError: true };
-            }
-          }
-        }
-        patchMessage(c, assistant.id, (m) => {
-          const parts: Part[] = [];
-          for (const p of m.parts) {
-            if (p.type === "tool_call" && p.id === call.id) {
-              parts.push({ ...p, status: res.isError ? "error" : "done", result: res });
-              for (const a of artifacts) parts.push({ type: "artifact", origin: "tool", toolCallId: call.id, ...a });
-            } else parts.push(p);
-          }
-          return { parts };
-        });
-        saveSoon(convId);
-      }
-
-      if (step + 1 >= maxSteps) {
-        patchMessage(c, assistant.id, { error: `Stopped after ${maxSteps} tool steps. Say "continue" to keep going, or raise the limit in Settings → General.` });
-        break;
-      }
-    }
+    await runTurn(host, c, { signal: abort.signal });
   } catch (e) {
-    const stopped = isAbort(e) || abort.signal.aborted;
-    if (assistantId) {
-      patchMessage(c, assistantId, (m) => ({
-        parts: m.parts.map((p) =>
-          p.type === "tool_call" && !p.server && (p.status === "pending" || p.status === "running")
-            ? { ...p, status: "error" as const, result: { text: "Stopped before this finished.", isError: true } }
-            : p,
-        ),
-        stopReason: stopped ? "stopped" : "error",
-        error: stopped ? undefined : errText(e),
-      }));
-    } else if (!stopped) {
-      toast(errText(e), "error");
-    }
+    if (!isAbort(e)) toast(errText(e), "error");
   } finally {
     aborts.delete(convId);
     setBusy(convId, null);
-    // an empty, error-free assistant bubble (stopped before anything arrived) is just noise
-    if (assistantId) {
-      const m = c.messages.find((x) => x.id === assistantId);
-      if (m && !m.parts.length && !m.error) {
-        c.messages = c.messages.filter((x) => x.id !== assistantId);
-        c.removed[assistantId] = Date.now();
-        render(convId);
-      }
-    }
     await saveNow(convId);
     scheduleSync();
+    if (document.visibilityState === "hidden" && get().settings.notifications && !abort.signal.aborted) {
+      const last = [...c.messages].reverse().find((m) => m.role === "assistant");
+      const text = last?.parts.map((p) => (p.type === "text" ? p.text : "")).join("").trim();
+      void notify(c.title, last?.error ?? (text || "Your answer is ready."));
+    }
+    if (firstAnswer && get().settings.autoTitle && !abort.signal.aborted) void autoTitle(c);
   }
 }
 
-// ---------- sync & backup ----------
+async function autoTitle(c: Conversation) {
+  try {
+    const title = await suggestTitle(host, c, new AbortController().signal);
+    if (title && live.get(c.id) === c) {
+      c.title = title;
+      touch(c);
+      render(c.id);
+      await saveNow(c.id);
+    }
+  } catch {
+    /* keep the first-message title */
+  }
+}
+
+// ---------------------------------------------------------------- library
+
+export async function saveItem<C extends CollectionName>(c: C, item: Partial<CollectionTypes[C]> & { id?: string }): Promise<CollectionTypes[C]> {
+  const saved = await library.put(c, item);
+  scheduleSync();
+  return saved;
+}
+
+export async function deleteItem(c: CollectionName, id: string) {
+  await library.remove(c, id);
+  scheduleSync();
+}
+
+export async function addAgentFromTemplate(t: { name: string; emoji?: string; description?: string; instructions: string }): Promise<Agent> {
+  return saveItem("agents", { name: t.name, emoji: t.emoji, description: t.description, instructions: t.instructions, knowledge: [], starters: [] });
+}
+
+export async function createProject(name: string): Promise<Project> {
+  return saveItem("projects", { name: name.trim() || "New project", instructions: "", knowledge: [] });
+}
+
+// ---------------------------------------------------------------- plugins
+
+export async function installPlugin(draft: PluginDraft): Promise<Plugin> {
+  const existing = library.list("plugins").find((p) => p.name === draft.name && (p.sourceUrl ?? "") === (draft.sourceUrl ?? ""));
+  const plugin = await saveItem("plugins", { ...draft, id: existing?.id, mcpServers: draft.mcpServers.map((m) => ({ ...m, id: m.id || uid("mcp") })) });
+  // agents that ship with a plugin become ordinary agents tied to it
+  for (const a of draft.agents) {
+    const prev = library.list("agents").find((x) => x.pluginId === plugin.id && x.name === a.name);
+    await saveItem("agents", { id: prev?.id, name: a.name, emoji: a.emoji, description: a.description, instructions: a.instructions, knowledge: prev?.knowledge ?? [], starters: prev?.starters ?? [], pluginId: plugin.id });
+  }
+  for (const cmd of draft.commands) void cmd;
+  return plugin;
+}
+
+export async function uninstallPlugin(id: string) {
+  const p = library.get("plugins", id);
+  if (!p) return;
+  for (const a of library.list("agents").filter((x) => x.pluginId === id)) await deleteItem("agents", a.id);
+  for (const s of p.settings) if (s.secret) await deleteSecret(pluginSecretName(id, s.key));
+  for (const m of p.mcpServers) await mcpManager.reset(m.id);
+  await deleteItem("plugins", id);
+}
+
+export async function setPluginEnabled(id: string, enabled: boolean) {
+  await saveItem("plugins", { id, enabled });
+}
+
+export async function savePluginSetting(p: Plugin, key: string, value: string, secret: boolean) {
+  if (secret) {
+    if (value) await setSecret(pluginSecretName(p.id, key), value);
+    else await deleteSecret(pluginSecretName(p.id, key));
+    await saveItem("plugins", { id: p.id, values: { ...p.values, [key]: value ? "•" : "" } });
+  } else await saveItem("plugins", { id: p.id, values: { ...p.values, [key]: value } });
+}
+
+export const galleryPlugins = () => GALLERY;
+
+// ---------------------------------------------------------------- export / import
+
+const modelNameOf = (m: Message) => (m.model ? (findModel(get().settings, m.model)?.model.name ?? m.model.modelId) : undefined);
+
+export async function exportChat(format: "md" | "html" | "json" | "pdf" | "docx") {
+  const c = live.get(get().activeId ?? "");
+  if (!c) return;
+  const name = safeFileName(c.title || "chat");
+  let bytes: Uint8Array;
+  let mime: string;
+  if (format === "md") [bytes, mime] = [utf8.encode(chatToMarkdown(c, modelNameOf)), "text/markdown"];
+  else if (format === "html") [bytes, mime] = [utf8.encode(chatToHtml(c, modelNameOf)), "text/html"];
+  else if (format === "json") [bytes, mime] = [utf8.encode(JSON.stringify(c, null, 2)), "application/json"];
+  else if (format === "pdf") [bytes, mime] = [await buildPdf(chatToMarkdown(c, modelNameOf), { title: c.title }), "application/pdf"];
+  else [bytes, mime] = [await buildDocx(chatToMarkdown(c, modelNameOf), { title: c.title }), mimeFromName("x.docx")];
+  const where = await saveFile(bytes, `${name}.${format}`, mime);
+  if (where) toast(where, "ok");
+}
+
+/** ChatGPT / Claude / TypingMind exports become ordinary chats here. */
+export async function importChats(file: File): Promise<number> {
+  const { source, chats } = detectAndImport(await file.text());
+  for (const c of chats) await repo.save(c);
+  await repo.flush();
+  refreshMetas();
+  toast(`Imported ${chats.length} chat(s) from ${source}.`, "ok");
+  scheduleSync();
+  return chats.length;
+}
+
+/** Search every chat's text (titles, messages). */
+export async function searchChats(query: string): Promise<{ meta: ConvMeta; snippet: string }[]> {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2) return [];
+  const out: { meta: ConvMeta; snippet: string }[] = [];
+  for (const meta of repo.list()) {
+    if (meta.title.toLowerCase().includes(q)) {
+      out.push({ meta, snippet: meta.preview ?? "" });
+      continue;
+    }
+    const c = live.get(meta.id) ?? (await repo.get(meta.id));
+    if (!c) continue;
+    for (const m of c.messages) {
+      const text = m.parts.map((p) => (p.type === "text" ? p.text : p.type === "attachment" || p.type === "artifact" ? p.name : "")).join(" ");
+      const at = text.toLowerCase().indexOf(q);
+      if (at >= 0) {
+        out.push({ meta, snippet: `${at > 40 ? "…" : ""}${text.slice(Math.max(0, at - 40), at + q.length + 80).replace(/\s+/g, " ")}` });
+        break;
+      }
+    }
+    if (out.length >= 100) break;
+  }
+  return out;
+}
+
+export interface UsageRow {
+  key: string;
+  name: string;
+  input: number;
+  output: number;
+  messages: number;
+  cost?: number;
+}
+
+/** Built-in list prices (USD per million tokens) where known; users can add their own. */
+const KNOWN_PRICES: Record<string, { input: number; output: number }> = {
+  "claude-fable-5-2": { input: 8, output: 40 },
+  "claude-opus-5-5": { input: 4, output: 20 },
+  "claude-sonnet-5-5": { input: 2, output: 10 },
+  "claude-haiku-5-5": { input: 0.1, output: 0.5 },
+};
+
+export async function usageStats(sinceDays: number): Promise<{ rows: UsageRow[]; days: { day: string; tokens: number; cost: number }[] }> {
+  const since = Date.now() - sinceDays * 86_400_000;
+  const rows = new Map<string, UsageRow>();
+  const days = new Map<string, { tokens: number; cost: number }>();
+  const prices = get().settings.prices;
+  for (const meta of repo.list()) {
+    if (meta.updatedAt < since) continue;
+    const c = live.get(meta.id) ?? (await repo.get(meta.id));
+    if (!c) continue;
+    for (const m of c.messages) {
+      if (m.role !== "assistant" || !m.usage || m.createdAt < since) continue;
+      const key = m.model ? `${m.model.providerId}::${m.model.modelId}` : "unknown";
+      const row = rows.get(key) ?? { key, name: modelNameOf(m) ?? "Unknown model", input: 0, output: 0, messages: 0 };
+      row.input += m.usage.input ?? 0;
+      row.output += m.usage.output ?? 0;
+      row.messages++;
+      const price = prices[key] ?? KNOWN_PRICES[m.model?.modelId ?? ""];
+      const cost = price ? ((m.usage.input ?? 0) * price.input + (m.usage.output ?? 0) * price.output) / 1e6 : 0;
+      if (price) row.cost = (row.cost ?? 0) + cost;
+      rows.set(key, row);
+      const day = new Date(m.createdAt).toISOString().slice(0, 10);
+      const d = days.get(day) ?? { tokens: 0, cost: 0 };
+      d.tokens += (m.usage.input ?? 0) + (m.usage.output ?? 0);
+      d.cost += cost;
+      days.set(day, d);
+    }
+  }
+  return {
+    rows: [...rows.values()].sort((a, b) => b.input + b.output - (a.input + a.output)),
+    days: [...days.entries()].sort().map(([day, v]) => ({ day, ...v })),
+  };
+}
+
+// ---------------------------------------------------------------- sync & backup
 
 function syncTarget(settings: Settings): { kv: KV; id: string; label: string } | null {
   if (!isTauri) return null;
@@ -797,16 +1058,14 @@ function syncTarget(settings: Settings): { kv: KV; id: string; label: string } |
     const dir = joinPath(p.icloudContainer, "Documents");
     return { kv: new FsKV(dir), id: `icloud:${dir}`, label: "iCloud" };
   }
-  if (settings.sync.folder) {
-    return { kv: new FsKV(settings.sync.folder), id: `folder:${settings.sync.folder}`, label: settings.sync.folder };
-  }
+  if (settings.sync.folder) return { kv: new FsKV(settings.sync.folder), id: `folder:${settings.sync.folder}`, label: settings.sync.folder };
   return null;
 }
 
 let syncing = false;
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
 
-function scheduleSync() {
+export function scheduleSync() {
   if (!get().settings.sync.auto || syncTimer) return;
   syncTimer = setTimeout(() => {
     syncTimer = null;
@@ -821,14 +1080,12 @@ export async function syncNow(quiet = false) {
     if (!quiet) toast("Sync is not set up. Choose a sync folder in Settings → Sync & backup.", "info");
     return;
   }
-  // never merge underneath a reply that is still being written
   if (syncing || Object.keys(get().busy).length) return;
   syncing = true;
   set({ sync: { ...get().sync, state: "syncing", target: target.label } });
   try {
     for (const id of [...saveTimers.keys()]) await saveNow(id);
     if (platform().icloudContainer && target.id.startsWith("icloud:")) {
-      // ask iCloud to bring down files that exist only in the cloud so far
       await invoke("icloud_prepare", { dir: joinPath(platform().icloudContainer!, "Documents") }).catch(() => undefined);
     }
     let state: SyncState = emptySyncState(target.id);
@@ -839,18 +1096,16 @@ export async function syncNow(quiet = false) {
     } catch {
       /* start fresh */
     }
-    const report = await syncWithRemote(repo, target.kv, state);
+    const report = await syncWithRemote(repo, target.kv, state, library);
     await kv.setText("sync-state.json", JSON.stringify(state));
     if (report.pulled) {
-      // bring anything that changed underneath us back into memory
       for (const id of [...live.keys()]) {
+        if (privateIds.has(id)) continue;
         const fresh = await repo.get(id);
         if (!fresh || fresh.deletedAt) {
           live.delete(id);
           if (get().activeId === id) set({ activeId: null, active: null });
-        } else {
-          live.set(id, fresh);
-        }
+        } else live.set(id, fresh);
       }
       const a = live.get(get().activeId ?? "");
       if (a) set({ active: { ...a, messages: a.messages.slice() } });
@@ -859,14 +1114,8 @@ export async function syncNow(quiet = false) {
     const message = report.errors.length ? `${report.errors.length} item(s) could not be synced: ${report.errors[0]}` : undefined;
     set({ sync: { state: report.errors.length ? "error" : "idle", target: target.label, at: Date.now(), message } });
     if (!quiet) {
-      toast(
-        report.errors.length
-          ? message!
-          : report.pulled || report.pushed
-            ? `Synced: ${report.pulled} received, ${report.pushed} sent.`
-            : "Everything is up to date.",
-        report.errors.length ? "error" : "ok",
-      );
+      const moved = report.pulled + report.pushed + report.libPulled + report.libPushed;
+      toast(report.errors.length ? message! : moved ? `Synced: ${report.pulled + report.libPulled} received, ${report.pushed + report.libPushed} sent.` : "Everything is up to date.", report.errors.length ? "error" : "ok");
     }
   } catch (e) {
     set({ sync: { state: "error", target: target.label, at: Date.now(), message: errText(e) } });
@@ -878,7 +1127,7 @@ export async function syncNow(quiet = false) {
 
 export async function exportBackupFile(includeFiles: boolean) {
   for (const id of [...saveTimers.keys()]) await saveNow(id);
-  const bytes = await exportBackup(repo, { includeFiles, device: platform().hostname });
+  const bytes = await exportBackup(repo, { includeFiles, device: platform().hostname, library });
   const name = `meridian-${new Date().toISOString().slice(0, 10)}.${BACKUP_EXT}`;
   const where = await saveFile(bytes, name, "application/zip");
   if (where) toast(`Backup created (${formatBytes(bytes.length)}). ${where}.`, "ok");
@@ -886,13 +1135,13 @@ export async function exportBackupFile(includeFiles: boolean) {
 
 export async function importBackupFile(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const r = await importBackup(repo, bytes);
-  live.clear();
+  const r = await importBackup(repo, bytes, library);
+  for (const id of [...live.keys()]) if (!privateIds.has(id)) live.delete(id);
   refreshMetas();
   const id = get().activeId;
   if (id) await openChat(id);
   toast(
-    `Import finished: ${r.added} new chat(s) added, ${r.merged} merged with chats already here, ${r.unchanged} already up to date. Nothing was replaced.`,
+    `Import finished: ${r.added} new chat(s) added, ${r.merged} merged with chats already here, ${r.unchanged} already up to date${r.library ? `, ${r.library} agents/projects/prompts/plugins/automations/memories added or updated` : ""}. Nothing was replaced.`,
     "ok",
   );
   scheduleSync();
@@ -902,3 +1151,10 @@ export async function importBackupFile(file: File) {
 export async function loadBlob(blobId: string) {
   return repo.getBlob(blobId);
 }
+
+/** Default media models are picked automatically; this says which (for the settings page). */
+export function autoMediaModel(kind: "image" | "video"): ModelRef | undefined {
+  return pickDefaultMedia(get().settings.providers, kind);
+}
+
+export type { TurnVersion };

@@ -1,7 +1,8 @@
 import { memo, useState } from "react";
 import { openWithSystem, saveFile } from "../platform/files";
 import { findModel } from "../providers/registry";
-import { attachToComposer, editAndResend, loadBlob, regenerate, setChatMode, toast, useApp } from "../state/store";
+import { attachToComposer, deleteMessage, editAndResend, forkChat, getKey, loadBlob, regenerate, selectVersion, setChatMode, toast, useApp } from "../state/store";
+import { speak, stopSpeaking } from "../voice";
 import type { BlobRef, Message, Part } from "../types";
 import { extOf, formatBytes } from "../util/bytes";
 import { Icon } from "./icons";
@@ -29,6 +30,14 @@ const TOOL_LABELS: Record<string, string> = {
   save_generated_file: "Save to computer",
   take_screenshot: "Screenshot",
   computer_input: "Mouse & keyboard",
+  update_plan: "Plan",
+  ask_user: "Question",
+  delegate: "Sub-agent",
+  search_knowledge: "Search knowledge",
+  remember: "Remember",
+  forget: "Forget",
+  run_javascript: "Run code",
+  read_skill: "Read skill",
 };
 
 function toolLabel(name: string): string {
@@ -219,9 +228,102 @@ function AttachmentChip({ part }: { part: Extract<Part, { type: "attachment" }> 
   );
 }
 
-export const MessageView = memo(function MessageView({ message, isLast, busy }: { message: Message; isLast: boolean; busy: boolean }) {
+function Versions({ userId }: { userId: string }) {
+  const versions = useApp((s) => s.active?.alternates?.[userId]);
+  const settings = useApp((s) => s.settings);
+  const [open, setOpen] = useState(false);
+  if (!versions?.length) return null;
+  return (
+    <span className="pop-anchor versions">
+      <button onClick={() => setOpen(!open)} title="Earlier answers to this message">
+        {versions.length + 1} versions ▾
+      </button>
+      <button onClick={() => useApp.setState({ compareOpen: userId })} title="Show versions side by side">
+        <Icon.compare />
+      </button>
+      {open && (
+        <div className="popover" style={{ left: 0, bottom: 28, width: 300 }} onMouseLeave={() => setOpen(false)}>
+          <div className="menu-head">Switch to an earlier answer</div>
+          {versions.map((v, i) => {
+            const m = v.messages.find((x) => x.role === "assistant");
+            const name = m?.model ? (findModel(settings, m.model)?.model.name ?? m.model.modelId) : "Answer";
+            const preview = v.messages.flatMap((x) => x.parts.map((p) => (p.type === "text" ? p.text : ""))).join(" ").slice(0, 80);
+            return (
+              <button key={v.id} className="menu-item" onClick={() => (setOpen(false), void selectVersion(userId, v.id))}>
+                <span className="grow">
+                  <b>{i + 1}. {name}</b>
+                  <br />
+                  <span className="muted" style={{ fontSize: 12.5 }}>{preview || "(no text)"}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </span>
+  );
+}
+
+function RetryMenu({ onClose }: { onClose: () => void }) {
+  const providers = useApp((s) => s.settings.providers);
+  const favorites = useApp((s) => s.settings.favorites);
+  const models = providers.flatMap((p) => p.models.filter((m) => m.kind === "chat").map((m) => ({ ref: { providerId: p.id, modelId: m.id }, name: m.name, provider: p.name })));
+  const fav = models.filter((m) => favorites.includes(`${m.ref.providerId}::${m.ref.modelId}`));
+  const list = (fav.length ? fav : models).slice(0, 12);
+  return (
+    <div className="popover" style={{ left: 0, bottom: 30, width: 280 }} onMouseLeave={onClose}>
+      <div className="menu-head">Try again with</div>
+      {list.map((m) => (
+        <button key={`${m.ref.providerId}::${m.ref.modelId}`} className="menu-item" onClick={() => (onClose(), void regenerate(m.ref))}>
+          <span className="grow">{m.name}</span>
+          <span className="muted" style={{ fontSize: 12 }}>{m.provider}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function CompareView({ userId, answers, busy }: { userId: string; answers: Message[]; busy: boolean }) {
+  const versions = useApp((s) => s.active?.alternates?.[userId]) ?? [];
+  const settings = useApp((s) => s.settings);
+  const nameOf = (msgs: Message[]) => {
+    const m = msgs.find((x) => x.role === "assistant");
+    return m?.model ? (findModel(settings, m.model)?.model.name ?? m.model.modelId) : "Answer";
+  };
+  const cols = [{ id: "current", messages: answers, current: true }, ...versions.map((v) => ({ id: v.id, messages: v.messages, current: false }))];
+  return (
+    <div>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <b className="grow">Compare answers</b>
+        <button className="btn small" onClick={() => useApp.setState({ compareOpen: null })}>Close</button>
+      </div>
+      <div className="compare-grid">
+        {cols.map((col) => (
+          <div key={col.id} className="compare-col">
+            <div className="head">
+              <span className="grow">{nameOf(col.messages)}</span>
+              {col.current ? (
+                <span className="badge ok">in use</span>
+              ) : (
+                <button className="btn small" disabled={busy} onClick={() => void selectVersion(userId, col.id)}>Use this</button>
+              )}
+            </div>
+            {col.messages.map((m) => (
+              <MessageView key={m.id} message={m} isLast={col.current} busy={busy && col.current} compact />
+            ))}
+            {!col.messages.length && <div className="spinner" />}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export const MessageView = memo(function MessageView({ message, isLast, busy, versionsFor, compact }: { message: Message; isLast: boolean; busy: boolean; versionsFor?: string; compact?: boolean }) {
   const [editing, setEditing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [retry, setRetry] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
   const settings = useApp((s) => s.settings);
   const text = message.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
 
@@ -229,6 +331,20 @@ export const MessageView = memo(function MessageView({ message, isLast, busy }: 
     void navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
+  };
+  const say = async () => {
+    if (speaking) {
+      stopSpeaking();
+      setSpeaking(false);
+      return;
+    }
+    setSpeaking(true);
+    try {
+      await speak(text, settings, getKey, () => setSpeaking(false));
+    } catch (e) {
+      setSpeaking(false);
+      toast(String(e instanceof Error ? e.message : e), "error");
+    }
   };
 
   if (message.role === "user") {
@@ -269,6 +385,11 @@ export const MessageView = memo(function MessageView({ message, isLast, busy }: 
                 <Icon.edit />
               </button>
             )}
+            {!busy && (
+              <button className="icon-btn" title="Fork from here" onClick={() => void forkChat(message.id)}>
+                <Icon.fork />
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -279,7 +400,7 @@ export const MessageView = memo(function MessageView({ message, isLast, busy }: 
   const found = findModel(settings, message.model);
   const modelName = found?.model.name ?? message.model?.modelId;
   const usage = message.usage;
-  const done = !streaming && (message.stopReason === "end" || message.stopReason === "stopped" || !!message.error);
+  const done = !streaming && (message.stopReason === "end" || message.stopReason === "stopped" || !!message.error || (!!message.stopReason && message.stopReason !== "tool_use"));
   return (
     <div className="msg assistant">
       {message.parts.map((p, i) => (
@@ -287,14 +408,32 @@ export const MessageView = memo(function MessageView({ message, isLast, busy }: 
       ))}
       {streaming && message.parts.length === 0 && <div className="spinner" aria-label="Waiting for the model" />}
       {message.error && <div className="error-line">{message.error}</div>}
-      {done && (
+      {done && !compact && (
         <div className="msg-actions">
           {text && <button className="icon-btn" title="Copy" onClick={copy}>{copied ? <Icon.check /> : <Icon.copy />}</button>}
-          {isLast && (
-            <button className="icon-btn" title="Try again" onClick={() => void regenerate()}>
-              <Icon.refresh />
+          {text && (
+            <button className={`icon-btn ${speaking ? "on" : ""}`} title={speaking ? "Stop reading" : "Read aloud"} onClick={() => void say()}>
+              <Icon.speaker />
             </button>
           )}
+          {isLast && (
+            <span className="pop-anchor">
+              <button className="icon-btn" title="Try again" onClick={() => void regenerate()} onContextMenu={(e) => (e.preventDefault(), setRetry(true))}>
+                <Icon.refresh />
+              </button>
+              <button className="icon-btn" title="Try again with another model" style={{ width: 18 }} onClick={() => setRetry(!retry)}>
+                <Icon.chevron />
+              </button>
+              {retry && <RetryMenu onClose={() => setRetry(false)} />}
+            </span>
+          )}
+          <button className="icon-btn" title="Fork from here" onClick={() => void forkChat(message.id)}>
+            <Icon.fork />
+          </button>
+          <button className="icon-btn" title="Delete this message" onClick={() => void deleteMessage(message.id)}>
+            <Icon.trash />
+          </button>
+          {versionsFor && <Versions userId={versionsFor} />}
           <span className="msg-meta">
             {modelName}
             {usage?.output != null ? ` · ${(usage.input ?? 0).toLocaleString()} in / ${usage.output.toLocaleString()} out` : ""}

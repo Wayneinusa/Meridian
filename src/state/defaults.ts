@@ -1,5 +1,6 @@
 import { defaultProviders } from "../providers/registry";
 import type { Settings } from "../types";
+import { uid } from "../types";
 
 export function defaultSettings(): Settings {
   return {
@@ -18,6 +19,20 @@ export function defaultSettings(): Settings {
     mcpServers: [],
     sync: { icloud: true, auto: true },
     maxAgentSteps: 40,
+    memory: true,
+    subagents: true,
+    search: { provider: "auto" },
+    autoTitle: true,
+    appearance: { fontSize: 15, width: "normal", sendOnEnter: true },
+    voice: { autoSpeak: false },
+    notifications: true,
+    runInBackground: false,
+    deviceId: uid("dev"),
+    deviceName: "",
+    prices: {},
+    favorites: [],
+    compareModels: [],
+    oauthApps: {},
   };
 }
 
@@ -38,5 +53,13 @@ export function migrateSettings(raw: unknown): Settings {
     sync: { ...d.sync, ...(s.sync ?? {}) },
     alwaysAllow: Array.isArray(s.alwaysAllow) ? s.alwaysAllow : [],
     mcpServers: Array.isArray(s.mcpServers) ? s.mcpServers : [],
+    search: { ...d.search, ...(s.search ?? {}) },
+    appearance: { ...d.appearance, ...(s.appearance ?? {}) },
+    voice: { ...d.voice, ...(s.voice ?? {}) },
+    prices: s.prices ?? {},
+    favorites: Array.isArray(s.favorites) ? s.favorites : [],
+    compareModels: Array.isArray(s.compareModels) ? s.compareModels : [],
+    oauthApps: s.oauthApps ?? {},
+    deviceId: typeof s.deviceId === "string" && s.deviceId ? s.deviceId : d.deviceId,
   };
 }

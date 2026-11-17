@@ -5,7 +5,8 @@
 // The folder holds exactly what a backup holds - conversations/<id>.json and
 // blobs/<id> - and every write is a merge, so two devices editing at once
 // never overwrite each other.
-import type { Conversation } from "../types";
+import { COLLECTIONS, type Conversation, type LibItem } from "../types";
+import { blobRefsOfItem, libKey, normalizeItem, sameItem, type Library } from "./library";
 import type { KV, KVEntry } from "./kv";
 import { blobRefsOf, mergeConversations, normalizeConversation, sameConversation } from "./merge";
 import { blobKey, convKey, type Repo } from "./repo";
@@ -22,6 +23,9 @@ export interface SyncState {
 export interface SyncReport {
   pulled: number;
   pushed: number;
+  /** library items received / sent */
+  libPulled: number;
+  libPushed: number;
   blobsUp: number;
   blobsDown: number;
   errors: string[];
@@ -33,9 +37,10 @@ export function emptySyncState(remoteId: string): SyncState {
 
 const stamp = (e: KVEntry) => `${e.mtime ?? 0}:${e.size ?? 0}`;
 
-export async function syncWithRemote(repo: Repo, remote: KV, state: SyncState): Promise<SyncReport> {
-  const report: SyncReport = { pulled: 0, pushed: 0, blobsUp: 0, blobsDown: 0, errors: [] };
+export async function syncWithRemote(repo: Repo, remote: KV, state: SyncState, library?: Library): Promise<SyncReport> {
+  const report: SyncReport = { pulled: 0, pushed: 0, libPulled: 0, libPushed: 0, blobsUp: 0, blobsDown: 0, errors: [] };
   const touched = new Map<string, Conversation>();
+  const touchedItems: LibItem[] = [];
 
   // 1. Read remote conversation files that changed since we last looked.
   const remoteFiles = (await remote.list("conversations/")).filter(
@@ -131,12 +136,63 @@ export async function syncWithRemote(repo: Repo, remote: KV, state: SyncState): 
     }
   }
 
-  // 4. Files referenced by the conversations that moved.
-  if (touched.size) {
+  // 3b. Library items: later edit wins, tombstones included.
+  if (library) {
+    for (const c of COLLECTIONS) {
+      try {
+        const remoteFiles = (await remote.list(`library/${c}/`)).filter((e) => e.key.endsWith(".json") && !basename(e.key).startsWith("."));
+        const theirs = new Map<string, LibItem>();
+        const strays: string[] = [];
+        for (const e of remoteFiles) {
+          const seenKey = `lib:${e.key}`;
+          const id = basename(e.key).replace(/\.json$/, "");
+          const local = library.all(c).find((i) => i.id === id);
+          if (e.mtime !== undefined && state.seen[seenKey] === stamp(e) && local && state.agreed[`lib:${c}:${id}`] === local.updatedAt) {
+            theirs.set(id, local);
+            continue;
+          }
+          try {
+            const item = normalizeItem(JSON.parse((await remote.getText(e.key)) ?? "null"));
+            if (!item) continue;
+            if (e.key !== libKey(c, item.id)) strays.push(e.key);
+            const prev = theirs.get(item.id);
+            theirs.set(item.id, prev && prev.updatedAt >= item.updatedAt ? prev : item);
+          } catch (err) {
+            report.errors.push(`${e.key}: ${String(err)}`);
+          }
+        }
+        for (const [, item] of theirs) {
+          if (await library.absorb(c, item)) {
+            report.libPulled++;
+            touchedItems.push(item);
+          }
+        }
+        for (const mine of library.all(c)) {
+          const there = theirs.get(mine.id);
+          if (!there || !sameItem(there, mine) || !remoteFiles.some((e) => e.key === libKey(c, mine.id))) {
+            if (!there || mine.updatedAt >= there.updatedAt) {
+              await remote.setText(libKey(c, mine.id), JSON.stringify(mine));
+              report.libPushed++;
+              touchedItems.push(mine);
+            }
+          }
+          state.agreed[`lib:${c}:${mine.id}`] = mine.updatedAt;
+        }
+        for (const key of strays) await remote.remove(key).catch(() => undefined);
+        for (const e of await remote.list(`library/${c}/`)) state.seen[`lib:${e.key}`] = stamp(e);
+      } catch (err) {
+        report.errors.push(`library/${c}: ${String(err)}`);
+      }
+    }
+  }
+
+  // 4. Files referenced by the conversations and library items that moved.
+  if (touched.size || touchedItems.length) {
     const remoteBlobs = new Set((await remote.list("blobs/")).map((e) => basename(e.key)));
     const localBlobs = await repo.blobIds();
-    for (const conv of touched.values()) {
-      for (const ref of blobRefsOf(conv)) {
+    const refs = [...[...touched.values()].flatMap((conv) => blobRefsOf(conv)), ...touchedItems.flatMap((i) => blobRefsOfItem(i))];
+    {
+      for (const ref of refs) {
         try {
           const here = localBlobs.has(ref.blobId);
           const there = remoteBlobs.has(ref.blobId);
@@ -164,6 +220,7 @@ export async function syncWithRemote(repo: Repo, remote: KV, state: SyncState): 
 
   // 5. Remember what the remote looks like now.
   const seen: Record<string, string> = {};
+  for (const [k, v] of Object.entries(state.seen)) if (k.startsWith("lib:")) seen[k] = v;
   for (const e of await remote.list("conversations/")) seen[e.key] = stamp(e);
   state.seen = seen;
   await repo.flush();

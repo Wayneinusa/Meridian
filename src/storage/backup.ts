@@ -2,7 +2,8 @@
 // conversations reference. Importing MERGES into what is already on the device
 // - existing chats are never replaced or removed.
 import { unzipSync, zipSync, type Zippable } from "fflate";
-import type { Conversation } from "../types";
+import { COLLECTIONS, type Conversation } from "../types";
+import { blobRefsOfItem, libKey, normalizeItem, type Library } from "./library";
 import { utf8 } from "../util/bytes";
 import { blobRefsOf, mergeConversations, normalizeConversation, sameConversation } from "./merge";
 import type { Repo } from "./repo";
@@ -16,6 +17,7 @@ export interface BackupManifest {
   device: string;
   conversations: number;
   blobs: number;
+  library?: number;
 }
 
 export interface ImportReport {
@@ -24,11 +26,13 @@ export interface ImportReport {
   unchanged: number;
   blobsAdded: number;
   skipped: number;
+  /** agents, projects, prompts, memories, plugins and automations added or updated */
+  library: number;
 }
 
 export async function exportBackup(
   repo: Repo,
-  opts: { includeFiles?: boolean; device?: string; only?: string[] } = {},
+  opts: { includeFiles?: boolean; device?: string; only?: string[]; library?: Library } = {},
 ): Promise<Uint8Array> {
   const includeFiles = opts.includeFiles ?? true;
   const files: Zippable = {};
@@ -42,6 +46,17 @@ export async function exportBackup(
     files[`conversations/${conv.id}.json`] = utf8.encode(JSON.stringify(conv));
     count++;
     if (includeFiles) for (const ref of blobRefsOf(conv)) wanted.add(ref.blobId);
+  }
+  let libCount = 0;
+  if (opts.library && !opts.only) {
+    for (const c of COLLECTIONS) {
+      for (const item of opts.library.all(c)) {
+        if (item.deletedAt) continue;
+        files[libKey(c, item.id)] = utf8.encode(JSON.stringify(item));
+        libCount++;
+        if (includeFiles) for (const ref of blobRefsOfItem(item)) wanted.add(ref.blobId);
+      }
+    }
   }
   let blobs = 0;
   for (const id of wanted) {
@@ -57,6 +72,7 @@ export async function exportBackup(
     device: opts.device ?? "unknown",
     conversations: count,
     blobs,
+    library: libCount,
   };
   files["manifest.json"] = utf8.encode(JSON.stringify(manifest, null, 2));
   return zipSync(files, { level: 6 });
@@ -72,10 +88,10 @@ export function readManifest(zipBytes: Uint8Array): BackupManifest {
   return m;
 }
 
-export async function importBackup(repo: Repo, zipBytes: Uint8Array): Promise<ImportReport> {
+export async function importBackup(repo: Repo, zipBytes: Uint8Array, library?: Library): Promise<ImportReport> {
   readManifest(zipBytes);
   const entries = unzipSync(zipBytes);
-  const report: ImportReport = { added: 0, merged: 0, unchanged: 0, blobsAdded: 0, skipped: 0 };
+  const report: ImportReport = { added: 0, merged: 0, unchanged: 0, blobsAdded: 0, skipped: 0, library: 0 };
 
   const have = await repo.blobIds();
   for (const [name, bytes] of Object.entries(entries)) {
@@ -116,6 +132,18 @@ export async function importBackup(repo: Repo, zipBytes: Uint8Array): Promise<Im
     } else {
       await repo.save(merged);
       report.merged++;
+    }
+  }
+  if (library) {
+    for (const [name, bytes] of Object.entries(entries)) {
+      const m = /^library\/([a-z]+)\/[^/]+\.json$/.exec(name);
+      if (!m || !COLLECTIONS.includes(m[1] as (typeof COLLECTIONS)[number])) continue;
+      try {
+        const item = normalizeItem(JSON.parse(utf8.decode(bytes)));
+        if (item && !item.deletedAt && (await library.absorb(m[1] as (typeof COLLECTIONS)[number], item))) report.library++;
+      } catch {
+        report.skipped++;
+      }
     }
   }
   await repo.flush();

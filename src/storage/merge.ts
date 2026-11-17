@@ -82,7 +82,20 @@ export function mergeConversations(a: Conversation, b: Conversation): Conversati
 
   const messages = [...byId.values()].sort((x, y) => x.createdAt - y.createdAt || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
 
-  return {
+  // earlier answers kept for the version switcher: union by version id
+  let alternates: Conversation["alternates"];
+  if (a.alternates || b.alternates) {
+    alternates = {};
+    for (const src of [older.alternates ?? {}, newer.alternates ?? {}]) {
+      for (const [key, versions] of Object.entries(src)) {
+        const list = (alternates[key] ??= []);
+        for (const v of versions) if (!list.some((x) => x.id === v.id)) list.push(v);
+        list.sort((x, y) => x.createdAt - y.createdAt);
+      }
+    }
+  }
+
+  const out: Conversation = {
     ...newer,
     createdAt: Math.min(a.createdAt, b.createdAt),
     updatedAt: Math.max(a.updatedAt, b.updatedAt),
@@ -90,6 +103,8 @@ export function mergeConversations(a: Conversation, b: Conversation): Conversati
     messages,
     removed,
   };
+  if (alternates) out.alternates = alternates;
+  return out;
 }
 
 /** Order-independent structural equality, used to skip needless writes. */
@@ -130,13 +145,18 @@ export function metaOf(c: Conversation): ConvMeta {
     pinned: c.pinned,
     preview,
     messageCount: c.messages.length,
+    projectId: c.projectId,
+    agentId: c.agentId,
+    archived: c.archived,
+    tags: c.tags,
   };
 }
 
 /** Every file (attachment, generated artifact, tool screenshot) a conversation points at. */
 export function blobRefsOf(c: Conversation): BlobRef[] {
   const out = new Map<string, BlobRef>();
-  for (const m of c.messages) {
+  const all = [...c.messages, ...Object.values(c.alternates ?? {}).flatMap((vs) => vs.flatMap((v) => v.messages))];
+  for (const m of all) {
     for (const p of m.parts) {
       if (p.type === "attachment" || p.type === "artifact") {
         out.set(p.blobId, { blobId: p.blobId, name: p.name, mime: p.mime, size: p.size });

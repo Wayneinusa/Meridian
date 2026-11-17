@@ -125,3 +125,52 @@ export function PreviewDialog() {
     </div>
   );
 }
+
+export function QuestionDialog() {
+  const q = useApp((s) => s.question);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [other, setOther] = useState("");
+  useEffect(() => {
+    setPicked([]);
+    setOther("");
+  }, [q?.id]);
+  if (!q) return null;
+  const submit = (answer: string) => answer.trim() && q.resolve(answer.trim());
+  return (
+    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="q-title">
+      <div className="modal narrow">
+        <div className="modal-head">
+          <h2 id="q-title">{q.question}</h2>
+        </div>
+        <div className="modal-body">
+          <div className="question-opts">
+            {q.options.map((o) =>
+              q.multiple ? (
+                <label key={o} className="switch">
+                  <input type="checkbox" checked={picked.includes(o)} onChange={(e) => setPicked(e.target.checked ? [...picked, o] : picked.filter((x) => x !== o))} />
+                  <span>{o}</span>
+                </label>
+              ) : (
+                <button key={o} className="btn" onClick={() => submit(o)}>{o}</button>
+              ),
+            )}
+          </div>
+          <label className="field" style={{ marginTop: 12 }}>
+            <span>{q.options.length ? "Or answer in your own words" : "Your answer"}</span>
+            <textarea rows={2} value={other} onChange={(e) => setOther(e.target.value)} autoFocus={!q.options.length} />
+          </label>
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={() => q.resolve(null)}>Skip</button>
+          <button
+            className="btn primary"
+            disabled={!other.trim() && !(q.multiple && picked.length)}
+            onClick={() => submit([...picked, other.trim()].filter(Boolean).join("; "))}
+          >
+            Answer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

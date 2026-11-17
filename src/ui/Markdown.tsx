@@ -1,18 +1,35 @@
-import { memo, useRef, useState, type ReactNode } from "react";
+import { Children, isValidElement, memo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import { openExternal } from "../platform/files";
+import { repo, useApp } from "../state/store";
 import { Icon } from "./icons";
 
 function CodeBlock({ children }: { children?: ReactNode }) {
   const ref = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
-  const lang = /language-([\w+-]+)/.exec((ref.current?.querySelector("code")?.className ?? "") as string)?.[1];
+  const first = Children.toArray(children)[0];
+  const cls = isValidElement<{ className?: string }>(first) ? (first.props.className ?? "") : "";
+  const lang = /language-([\w+-]+)/.exec(cls)?.[1];
   return (
     <div className="codeblock">
       <div className="codeblock-head">
-        <span>{lang ?? "code"}</span>
+        <span className="grow">{lang ?? "code"}</span>
+        {(lang === "html" || lang === "svg" || lang === "xml") && (
+          <button
+            className="btn small"
+            title="Show this as a page"
+            onClick={async () => {
+              const text = ref.current?.innerText ?? "";
+              const html = lang === "svg" || /^\s*<svg/.test(text) ? `<!doctype html><body style="margin:0;display:grid;place-items:center;min-height:100vh">${text}</body>` : text;
+              const blob = await repo.putBlob(new TextEncoder().encode(html), "text/html", "preview.html");
+              useApp.setState({ preview: blob });
+            }}
+          >
+            Preview
+          </button>
+        )}
         <button
           className="icon-btn"
           title="Copy code"
