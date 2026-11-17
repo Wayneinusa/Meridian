@@ -81,6 +81,8 @@ npm run tauri build -- --target x86_64-pc-windows-gnu --bundles nsis
 
 Windows 10 and 11 include the WebView2 runtime the app needs; if it is missing, the installer downloads it.
 
+Every push to `main` also publishes the Windows installer at **Releases › Latest** (`https://github.com/Wayneinusa/Meridian/releases/latest`). Each build has its own version (`0.2.<build number>`), shown in Settings › General › About, and running a newer installer upgrades the installed copy without touching chats or settings.
+
 ## Build for iPhone and iPad
 
 No Mac is needed: GitHub's Mac servers compile the app.

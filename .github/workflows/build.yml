@@ -91,6 +91,14 @@ jobs:
           fi
 
       - run: npm ci
+      # Every build gets its own version (0.2.<run number>) so installers upgrade the copy already installed.
+      - name: Set the version
+        shell: bash
+        run: |
+          v="0.2.${{ github.run_number }}"
+          node -e "const f='src-tauri/tauri.conf.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f));c.version='$v';fs.writeFileSync(f,JSON.stringify(c,null,2))"
+          echo "MERIDIAN_VERSION=$v" >> "$GITHUB_ENV"
+          echo "MERIDIAN_BUILD=${{ github.run_number }}" >> "$GITHUB_ENV"
 
       - name: Install XcodeGen
         run: which xcodegen >/dev/null 2>&1 || brew install xcodegen
@@ -181,6 +189,14 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      # Every build gets its own version (0.2.<run number>) so installers upgrade the copy already installed.
+      - name: Set the version
+        shell: bash
+        run: |
+          v="0.2.${{ github.run_number }}"
+          node -e "const f='src-tauri/tauri.conf.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f));c.version='$v';fs.writeFileSync(f,JSON.stringify(c,null,2))"
+          echo "MERIDIAN_VERSION=$v" >> "$GITHUB_ENV"
+          echo "MERIDIAN_BUILD=${{ github.run_number }}" >> "$GITHUB_ENV"
       - name: Build the installer
         run: |
           set -o pipefail
@@ -191,6 +207,15 @@ jobs:
           name: Meridian-Windows
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
+      # A release gives the installer a permanent link: github.com/<repo>/releases/latest
+      - name: Publish the installer as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$MERIDIAN_VERSION" src-tauri/target/release/bundle/nsis/*.exe \
+            --repo "${{ github.repository }}" --target "${{ github.sha }}" --latest \
+            --title "Meridian $MERIDIAN_VERSION for Windows" \
+            --notes "Windows installer built from ${{ github.sha }}. Run it to install or upgrade; your chats and settings are kept."
       - name: Write report
         if: always()
         run: |

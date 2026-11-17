@@ -162,6 +162,13 @@ export function GeneralExtras() {
           <input type="text" defaultValue={settings.deviceName} onBlur={(e) => e.target.value.trim() && set({ deviceName: e.target.value.trim() })} />
         </label>
       </div>
+      <h4>About</h4>
+      <div className="card">
+        <div className="muted" data-testid="app-version">
+          Meridian {__APP_VERSION__}
+          {__APP_BUILD__ ? ` · build ${__APP_BUILD__}` : ""}
+        </div>
+      </div>
     </>
   );
 }
