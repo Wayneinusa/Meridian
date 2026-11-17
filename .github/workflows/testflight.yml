@@ -1,0 +1,71 @@
+# Signed build with iCloud, uploaded to TestFlight. Run it by hand from the Actions tab.
+# Needs the paid Apple Developer Program and these repository settings
+# (Settings > Secrets and variables > Actions):
+#   Secrets:  ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8 (the whole text of the .p8 file), APPLE_TEAM_ID
+#   Variable: BUNDLE_ID (your own bundle identifier, e.g. com.yourname.meridian)
+# The App ID must have the iCloud capability with a container named iCloud.<BUNDLE_ID>.
+# This workflow has not been run yet; signing setups often need an adjustment on first use.
+name: TestFlight
+
+on:
+  workflow_dispatch:
+
+jobs:
+  testflight:
+    name: iPhone and iPad (signed)
+    runs-on: macos-26
+    env:
+      BUNDLE_ID: ${{ vars.BUNDLE_ID }}
+      APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_API_KEY: ${{ secrets.ASC_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the signing settings exist
+        env:
+          P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          for name in BUNDLE_ID APPLE_DEVELOPMENT_TEAM APPLE_API_KEY APPLE_API_ISSUER P8; do
+            if [ -z "${!name}" ]; then echo "::error::Missing setting: $name (see the comment at the top of this workflow)"; exit 1; fi
+          done
+          mkdir -p "$HOME/private_keys"
+          printf '%s\n' "$P8" > "$HOME/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          echo "APPLE_API_KEY_PATH=$HOME/private_keys/AuthKey_${APPLE_API_KEY}.p8" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Use your bundle identifier everywhere
+        run: |
+          node -e '
+            const fs = require("fs");
+            const id = process.env.BUNDLE_ID;
+            const conf = "src-tauri/tauri.conf.json";
+            const c = JSON.parse(fs.readFileSync(conf, "utf8"));
+            const old = c.identifier;
+            c.identifier = id;
+            fs.writeFileSync(conf, JSON.stringify(c, null, 2) + "\n");
+            for (const f of ["src-tauri/Info.ios.plist", "src-tauri/ios/Meridian.entitlements"]) {
+              fs.writeFileSync(f, fs.readFileSync(f, "utf8").split("iCloud." + old).join("iCloud." + id));
+            }
+          '
+      - name: Install XcodeGen
+        run: which xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Generate the Xcode project
+        run: npm run tauri ios init
+      - name: Add the iCloud entitlements
+        run: ./scripts/ios-setup.sh
+      - name: Build and sign
+        run: npm run tauri ios build -- --export-method app-store-connect --build-number ${{ github.run_number }}
+      - name: Upload to TestFlight
+        run: |
+          ipa=$(find src-tauri/gen/apple/build -name '*.ipa' | head -n 1)
+          test -n "$ipa"
+          xcrun altool --upload-app --type ios --file "$ipa" --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"

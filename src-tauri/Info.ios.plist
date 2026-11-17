@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Files the assistant creates are saved to the app's Documents folder; these two keys make it visible in the Files app. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<!-- Show the app's iCloud folder in iCloud Drive (also on iCloud for Windows). The key must be "iCloud." + your bundle identifier. -->
+	<key>NSUbiquitousContainers</key>
+	<dict>
+		<key>iCloud.app.meridian.client</key>
+		<dict>
+			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+			<true/>
+			<key>NSUbiquitousContainerName</key>
+			<string>Meridian</string>
+			<key>NSUbiquitousContainerSupportedFolderLevels</key>
+			<string>Any</string>
+		</dict>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Take a photo or video to attach to a chat.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Record sound when you capture a video to attach to a chat.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose photos and videos to attach to a chat.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect to model servers on your own network, such as Ollama or LM Studio.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

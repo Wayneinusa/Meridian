@@ -1,0 +1,42 @@
+import { defaultProviders } from "../providers/registry";
+import type { Settings } from "../types";
+
+export function defaultSettings(): Settings {
+  return {
+    theme: "system",
+    providers: defaultProviders(),
+    defaultModel: { providerId: "anthropic", modelId: "claude-opus-5-5" },
+    systemPrompt: "",
+    params: {},
+    modelParams: {},
+    showThinking: true,
+    webSearch: true,
+    refusalFallback: true,
+    tools: { files: true, media: true, web: true, computer: false, connectors: true },
+    autoApproveComputer: false,
+    alwaysAllow: [],
+    mcpServers: [],
+    sync: { icloud: true, auto: true },
+    maxAgentSteps: 40,
+  };
+}
+
+/** Fill in anything a settings file from an older version is missing. */
+export function migrateSettings(raw: unknown): Settings {
+  const d = defaultSettings();
+  if (!raw || typeof raw !== "object") return d;
+  const s = raw as Partial<Settings>;
+  const providers = Array.isArray(s.providers) && s.providers.length ? s.providers : d.providers;
+  for (const dp of d.providers) if (!providers.some((p) => p.id === dp.id)) providers.push(dp);
+  return {
+    ...d,
+    ...s,
+    providers,
+    params: s.params ?? {},
+    modelParams: s.modelParams ?? {},
+    tools: { ...d.tools, ...(s.tools ?? {}) },
+    sync: { ...d.sync, ...(s.sync ?? {}) },
+    alwaysAllow: Array.isArray(s.alwaysAllow) ? s.alwaysAllow : [],
+    mcpServers: Array.isArray(s.mcpServers) ? s.mcpServers : [],
+  };
+}

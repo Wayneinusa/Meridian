@@ -1,0 +1,46 @@
+[package]
+name = "meridian"
+version = "0.1.0"
+description = "Meridian - a multi-provider AI workspace"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "meridian_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# unsafe-headers: do not force a browser-style Origin header onto API requests
+tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "time", "sync", "rt", "macros"] }
+base64 = "0.22"
+
+# OS credential store: Windows Credential Manager, Apple Keychain
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
+# Screenshots and mouse/keyboard control (desktop Windows and macOS)
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+xcap = "0.9"
+enigo = "0.6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# iCloud container lookup
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSFileManager", "NSURL", "NSString", "NSError"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

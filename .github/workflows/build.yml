@@ -1,0 +1,226 @@
+# Builds Meridian on GitHub's servers:
+#   - "Tests" runs the unit tests and builds the web UI.
+#   - "iPhone and iPad" compiles the iOS app on a Mac runner; the unsigned .ipa appears under Artifacts.
+#   - "Windows" builds the installer; it appears under Artifacts too.
+#   - "Publish results" writes a short report per job to the ci-logs branch.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Type-check, unit tests, web build
+        run: |
+          set -o pipefail
+          { npm run typecheck && npm test && npm run build; } 2>&1 | tee test.log
+      - name: Write report
+        if: always()
+        run: |
+          {
+            echo "job: test"
+            echo "result: ${{ job.status }}"
+            echo "--- errors"
+            grep -E "error|FAIL|✗|Tests |Test Files " test.log | head -100 || true
+            echo "--- last lines"
+            tail -n 25 test.log || true
+          } > report-test.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-test
+          path: report-test.txt
+          if-no-files-found: ignore
+
+  ios:
+    name: iPhone and iPad
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Show tool versions
+        run: |
+          xcodebuild -version | tee versions.txt
+          rustc --version | tee -a versions.txt
+          node --version | tee -a versions.txt
+          xcodebuild -showsdks 2>&1 | tee -a versions.txt
+
+      - name: Make sure the iOS platform is installed
+        run: |
+          if ! xcrun simctl list runtimes 2>/dev/null | grep -q "iOS"; then
+            xcodebuild -downloadPlatform iOS 2>&1 | tail -n 5
+          fi
+
+      - run: npm ci
+
+      - name: Install XcodeGen
+        run: which xcodegen >/dev/null 2>&1 || brew install xcodegen
+
+      - name: Generate the Xcode project
+        run: |
+          set -o pipefail
+          npm run tauri ios init 2>&1 | tee init.log
+
+      # No signing identity is used. The .ipa is signed later, when it is installed
+      # (Sideloadly with an Apple ID) or by the TestFlight workflow.
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          npm run tauri ios build -- --no-sign 2>&1 | tee build.log
+
+      - name: Collect the .ipa
+        run: |
+          ipa=$(find src-tauri/gen/apple/build -name '*.ipa' | head -n 1)
+          test -n "$ipa"
+          cp "$ipa" Meridian-unsigned.ipa
+          ls -la Meridian-unsigned.ipa | tee ipa.txt
+          unzip -l Meridian-unsigned.ipa | head -n 40 | tee -a ipa.txt
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Meridian-iOS-unsigned
+          path: Meridian-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Write report
+        if: always()
+        run: |
+          {
+            echo "job: ios"
+            echo "result: ${{ job.status }}"
+            echo "--- tools"
+            head -n 40 versions.txt 2>/dev/null || true
+            echo "--- init (last lines)"
+            tail -n 25 init.log 2>/dev/null | sed "s#$PWD/##g" || true
+            echo "--- errors"
+            grep -E "error(\[E[0-9]+\])?:|error :|fatal error|xcodebuild: error|Undefined symbol|ld: |BUILD (SUCCEEDED|FAILED)|ARCHIVE (SUCCEEDED|FAILED)|^Error|failed to" build.log 2>/dev/null | sed "s#$PWD/##g" | awk '!seen[$0]++' | head -300 || true
+            echo "--- rust error context"
+            grep -E -A 12 "^error(\[E[0-9]+\])?:" build.log 2>/dev/null | sed "s#$PWD/##g" | head -400 || true
+            echo "--- last lines of the build log"
+            tail -n 60 build.log 2>/dev/null | sed "s#$PWD/##g" || true
+            echo "--- package"
+            cat ipa.txt 2>/dev/null || true
+          } > report-ios.txt
+          {
+            echo "### iPhone and iPad"
+            echo '```'
+            head -c 60000 report-ios.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-ios
+          path: report-ios.txt
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Build the installer
+        run: |
+          set -o pipefail
+          npm run tauri build -- --bundles nsis 2>&1 | tee build.log
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Meridian-Windows
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+      - name: Write report
+        if: always()
+        run: |
+          {
+            echo "job: windows"
+            echo "result: ${{ job.status }}"
+            echo "--- errors"
+            grep -E "error(\[E[0-9]+\])?:|^Error|failed to" build.log 2>/dev/null | awk '!seen[$0]++' | head -200 || true
+            echo "--- rust error context"
+            grep -E -A 12 "^error(\[E[0-9]+\])?:" build.log 2>/dev/null | head -300 || true
+            echo "--- last lines of the build log"
+            tail -n 40 build.log 2>/dev/null || true
+            echo "--- package"
+            ls -la src-tauri/target/release/bundle/nsis/ 2>/dev/null || true
+          } > report-windows.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-windows
+          path: report-windows.txt
+          if-no-files-found: ignore
+
+  report:
+    name: Publish results
+    needs: [test, ios, windows]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: report-*
+          path: reports
+          merge-multiple: true
+      - name: Push the reports to the ci-logs branch
+        run: |
+          mkdir -p out
+          cp -R reports/. out/ 2>/dev/null || true
+          {
+            echo "run: ${{ github.run_number }}"
+            echo "run_id: ${{ github.run_id }}"
+            echo "commit: ${{ github.sha }}"
+            echo "test: ${{ needs.test.result }}"
+            echo "ios: ${{ needs.ios.result }}"
+            echo "windows: ${{ needs.windows.result }}"
+            date -u
+          } > out/status.txt
+          cd out
+          git init -q -b ci-logs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Results for build ${{ github.run_number }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ci-logs
