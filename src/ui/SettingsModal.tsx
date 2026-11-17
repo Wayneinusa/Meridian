@@ -8,12 +8,17 @@ import { mcpManager } from "../tools/mcp";
 import type { McpServerConfig, ModelInfo, ModelRef, ProviderConfig, Settings } from "../types";
 import { modelKey, uid } from "../types";
 import { Icon } from "./icons";
+import { ConnectorsTab } from "./ConnectorsTab";
+import { MemoryTab, PluginsTab } from "./PluginsTab";
+import { GeneralExtras, SearchKeys } from "./SettingsExtras";
 
 const TABS = [
   ["providers", "Providers & keys"],
   ["models", "Models"],
   ["tools", "Tools & computer"],
   ["connectors", "Connectors"],
+  ["plugins", "Plugins"],
+  ["memory", "Memory"],
   ["sync", "Sync & backup"],
   ["general", "General"],
 ] as const;
@@ -399,6 +404,12 @@ function ToolsTab({ settings }: { settings: Settings }) {
         </div>
       )}
 
+      <h4>Web search</h4>
+      <SearchKeys />
+      <div className="card">
+        <Toggle checked={settings.subagents} onChange={(v) => void updateSettings({ subagents: v })} label="Sub-agents" hint="Let the assistant hand independent parts of big jobs to helpers that work in parallel (uses more tokens)." />
+      </div>
+
       <h4>Always allowed</h4>
       {settings.alwaysAllow.length === 0 ? (
         <div className="hint">Nothing yet. Tools you choose “Always allow” for show up here.</div>
@@ -412,159 +423,6 @@ function ToolsTab({ settings }: { settings: Settings }) {
           ))}
         </div>
       )}
-    </>
-  );
-}
-
-// ---------- connectors ----------
-
-function ConnectorCard({ server }: { server: McpServerConfig }) {
-  const [, force] = useState(0);
-  const [token, setToken] = useState("");
-  const [testing, setTesting] = useState(false);
-  useEffect(() => mcpManager.onChange(() => force((n) => n + 1)), []);
-  const status = mcpManager.status.get(server.id);
-  const patch = async (p: Partial<McpServerConfig>) => {
-    await updateSettings((s) => ({ mcpServers: s.mcpServers.map((x) => (x.id === server.id ? { ...x, ...p } : x)) }));
-    await mcpManager.reset(server.id);
-  };
-  const test = async () => {
-    setTesting(true);
-    const cfg = useApp.getState().settings.mcpServers.find((x) => x.id === server.id)!;
-    const st = await mcpManager.connect(cfg);
-    setTesting(false);
-    if (st.state === "ready") toast(`${server.name}: connected, ${st.tools.length} tools.`, "ok");
-    else toast(`${server.name}: ${st.error ?? "could not connect"}`, "error");
-  };
-  return (
-    <div className="card">
-      <div className="row" style={{ marginBottom: 8 }}>
-        <h4 className="grow">{server.name}</h4>
-        {status?.state === "ready" && <span className="badge ok">{status.tools.length} tools</span>}
-        {status?.state === "error" && <span className="badge err">error</span>}
-        {status?.state === "connecting" && <span className="spinner" />}
-        <span className="badge">{server.transport === "http" ? "remote" : "local command"}</span>
-      </div>
-      {server.transport === "http" ? (
-        <>
-          <label className="field">
-            <span>Server URL</span>
-            <input type="url" defaultValue={server.url} spellCheck={false} placeholder="https://example.com/mcp" onBlur={(e) => e.target.value !== (server.url ?? "") && void patch({ url: e.target.value.trim() })} />
-          </label>
-          <label className="field">
-            <span>Access token (sent as “Authorization: Bearer …”)</span>
-            <div className="row">
-              <input type="password" autoComplete="off" placeholder={server.hasToken ? "•••••••• saved — type to replace" : "Optional"} value={token} onChange={(e) => setToken(e.target.value)} />
-              <button
-                className="btn"
-                disabled={!token.trim() && !server.hasToken}
-                onClick={async () => {
-                  if (token.trim()) await setSecret(mcpTokenName(server.id), token.trim());
-                  else await deleteSecret(mcpTokenName(server.id));
-                  await patch({ hasToken: !!token.trim() });
-                  setToken("");
-                }}
-              >
-                {token.trim() ? "Save" : "Clear"}
-              </button>
-            </div>
-          </label>
-        </>
-      ) : (
-        <>
-          <label className="field">
-            <span>Command</span>
-            <input type="text" defaultValue={server.command} spellCheck={false} placeholder="npx" onBlur={(e) => e.target.value !== (server.command ?? "") && void patch({ command: e.target.value.trim() })} />
-          </label>
-          <label className="field">
-            <span>Arguments (one per line)</span>
-            <textarea rows={2} defaultValue={(server.args ?? []).join("\n")} spellCheck={false} placeholder={"-y\n@modelcontextprotocol/server-filesystem\nC:\\Users\\me\\Documents"} onBlur={(e) => void patch({ args: e.target.value.split("\n").map((l) => l.trim()).filter(Boolean) })} />
-          </label>
-          <label className="field">
-            <span>Environment variables (NAME=value, one per line)</span>
-            <textarea
-              rows={2}
-              spellCheck={false}
-              defaultValue={Object.entries(server.env ?? {}).map(([k, v]) => `${k}=${v}`).join("\n")}
-              onBlur={(e) => {
-                const env: Record<string, string> = {};
-                for (const line of e.target.value.split("\n")) {
-                  const i = line.indexOf("=");
-                  if (i > 0) env[line.slice(0, i).trim()] = line.slice(i + 1);
-                }
-                void patch({ env });
-              }}
-            />
-          </label>
-        </>
-      )}
-      <Toggle checked={server.enabled} onChange={(v) => void patch({ enabled: v })} label="Enabled" />
-      <Toggle checked={!!server.trusted} onChange={(v) => void patch({ trusted: v })} label="Run this connector's tools without asking" hint="Otherwise each call is confirmed, because connectors act in outside services." />
-      {status?.state === "error" && <div className="note err" style={{ marginBottom: 8 }}>{status.error}</div>}
-      {status?.state === "ready" && status.tools.length > 0 && (
-        <details style={{ marginBottom: 8 }}>
-          <summary className="muted" style={{ cursor: "pointer", fontSize: 13 }}>Tools</summary>
-          <div className="chips" style={{ marginTop: 6 }}>
-            {status.tools.map((t) => (
-              <span className="badge" key={t.name} title={t.description}>{t.name}</span>
-            ))}
-          </div>
-        </details>
-      )}
-      <div className="row wrap">
-        <button className="btn small" disabled={testing} onClick={() => void test()}>{testing ? "Connecting…" : "Connect and list tools"}</button>
-        <button
-          className="btn small danger"
-          onClick={async () => {
-            if (!confirm(`Remove connector ${server.name}?`)) return;
-            await deleteSecret(mcpTokenName(server.id));
-            await mcpManager.reset(server.id);
-            await updateSettings((s) => ({ mcpServers: s.mcpServers.filter((x) => x.id !== server.id) }));
-          }}
-        >
-          Remove
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ConnectorsTab({ settings }: { settings: Settings }) {
-  const [name, setName] = useState("");
-  const [transport, setTransport] = useState<"http" | "stdio">("http");
-  const desktop = platform().desktop;
-  return (
-    <>
-      <h3>Connectors</h3>
-      <p>
-        Connect outside tools and data through the Model Context Protocol (MCP). Remote servers work on every device. Local servers started by a command run in the desktop app.
-      </p>
-      {settings.mcpServers.map((s) => (
-        <ConnectorCard key={s.id} server={s} />
-      ))}
-      <div className="card">
-        <h4 style={{ marginBottom: 8 }}>Add a connector</h4>
-        <div className="row wrap">
-          <input type="text" placeholder="Name, e.g. Notion" value={name} onChange={(e) => setName(e.target.value)} style={{ flex: "1 1 160px" }} />
-          <select value={transport} onChange={(e) => setTransport(e.target.value as "http" | "stdio")} style={{ flex: "0 1 190px" }} aria-label="Connector type">
-            <option value="http">Remote server (URL)</option>
-            <option value="stdio" disabled={!desktop}>Local command{desktop ? "" : " (desktop only)"}</option>
-          </select>
-          <button
-            className="btn primary"
-            disabled={!name.trim()}
-            onClick={() => {
-              void updateSettings((s) => ({ mcpServers: [...s.mcpServers, { id: uid("mcp"), name: name.trim(), transport, enabled: true }] }));
-              setName("");
-            }}
-          >
-            Add
-          </button>
-        </div>
-        <p className="hint" style={{ marginTop: 8 }}>
-          Remote servers are reached with a URL and, if needed, an access token or API key from that service. Servers that only offer browser sign-in (OAuth) are not supported yet.
-        </p>
-      </div>
     </>
   );
 }
@@ -743,6 +601,7 @@ function GeneralTab({ settings }: { settings: Settings }) {
         <input type="number" min={1} max={200} defaultValue={settings.maxAgentSteps} onBlur={(e) => void updateSettings({ maxAgentSteps: Math.min(200, Math.max(1, Math.round(Number(e.target.value) || 40))) })} />
       </label>
       <p className="hint">Sampling and other generation parameters are behind the sliders button at the top of a chat.</p>
+      <GeneralExtras />
     </>
   );
 }
@@ -778,9 +637,11 @@ export function SettingsModal() {
             {tab === "providers" && <ProvidersTab settings={settings} />}
             {tab === "models" && <ModelsTab settings={settings} />}
             {tab === "tools" && <ToolsTab settings={settings} />}
-            {tab === "connectors" && <ConnectorsTab settings={settings} />}
+            {tab === "connectors" && <ConnectorsTab />}
             {tab === "sync" && <SyncTab settings={settings} />}
             {tab === "general" && <GeneralTab settings={settings} />}
+            {tab === "plugins" && <PluginsTab />}
+            {tab === "memory" && <MemoryTab />}
           </div>
         </div>
       </div>

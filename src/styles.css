@@ -398,3 +398,7 @@ body { font-size: var(--font-size); }
 .turn { display: flex; flex-direction: column; gap: 14px; }
 .show-narrow { display: none; }
 @media (max-width: 760px) { .hide-narrow { display: none; } .show-narrow { display: flex; } }
+.quote-btn { position: fixed; z-index: 60; transform: translateX(-50%); box-shadow: var(--shadow); }
+.star { color: var(--muted); border: 0; background: none; padding: 0 4px; font-size: 14px; }
+.star.on { color: #d79b00; }
+@media (min-width: 861px) { .toasts { left: auto; right: 16px; transform: none; width: 360px; } }

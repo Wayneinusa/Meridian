@@ -41,7 +41,8 @@ interface SlashItem {
 
 function CompareMenu({ selected, onChange, onClose }: { selected: ModelRef[]; onChange: (r: ModelRef[]) => void; onClose: () => void }) {
   const providers = useApp((s) => s.settings.providers);
-  const current = useApp((s) => currentModelRef(s.active));
+  const active = useApp((s) => s.active);
+  const current = currentModelRef(active);
   const models = providers.flatMap((p) => (p.enabled ? p.models.filter((m) => m.kind === "chat").map((m) => ({ ref: { providerId: p.id, modelId: m.id }, name: m.name, provider: p.name })) : []));
   const key = (r: ModelRef) => `${r.providerId}::${r.modelId}`;
   return (

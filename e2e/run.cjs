@@ -381,13 +381,14 @@ async function main() {
 
     console.log("connector (MCP over HTTP)");
     await openSettings(page, "Connectors");
-    await page.locator('input[placeholder^="Name"]').fill("Demo");
-    await page.getByRole("button", { name: "Add", exact: true }).click();
+    const byAddress = page.locator(".card", { has: page.locator('input[placeholder="https://example.com/mcp"]') });
+    await byAddress.locator('input[placeholder="Name"]').fill("Demo");
+    await byAddress.locator('input[placeholder="https://example.com/mcp"]').fill("https://mcp.example.test/mcp");
+    await byAddress.getByRole("button", { name: "Add", exact: true }).click();
     const conn = page.locator(".card", { hasText: "Demo" }).first();
-    await conn.locator('input[type="url"]').fill("https://mcp.example.test/mcp");
-    await conn.locator('input[type="url"]').blur();
+    await conn.getByRole("button", { name: "Details" }).click();
     await conn.locator('input[type="password"]').fill("secret-token");
-    await conn.getByRole("button", { name: "Save" }).click();
+    await conn.getByRole("button", { name: "Save", exact: true }).click();
     await conn.getByRole("button", { name: "Connect and list tools" }).click();
     await page.waitForFunction(() => [...document.querySelectorAll(".toast.ok")].some((t) => /Demo: connected, 1 tools/.test(t.textContent)));
     check("connector handshake: initialize → initialized → tools/list with bearer token", ["initialize", "notifications/initialized", "tools/list"].every((m) => seen.mcp.some((x) => x.msg.method === m)) && seen.mcp.at(-1).headers.authorization === "Bearer secret-token" && seen.mcp.at(-1).headers["mcp-session-id"] === "sess-1");

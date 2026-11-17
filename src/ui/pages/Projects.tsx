@@ -45,7 +45,8 @@ export function ProjectsPage() {
 export function ProjectPage({ id }: { id: string }) {
   const project = useApp((s) => s.lib.projects.find((p) => p.id === id));
   const agents = useApp((s) => s.lib.agents);
-  const metas = useApp((s) => s.metas.filter((m) => m.projectId === id));
+  const allMetas = useApp((s) => s.metas);
+  const metas = allMetas.filter((m) => m.projectId === id);
   if (!project) return <div className="page"><div className="page-inner"><p>This project no longer exists.</p></div></div>;
   const save = (patch: Partial<Project>) => void saveItem("projects", { id, ...patch });
   return (

@@ -45,5 +45,22 @@
     "iOS": {
       "minimumSystemVersion": "15.0"
     }
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [
+        {
+          "scheme": [
+            "meridian"
+          ],
+          "appLink": false
+        }
+      ],
+      "desktop": {
+        "schemes": [
+          "meridian"
+        ]
+      }
+    }
   }
 }

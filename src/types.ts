@@ -188,7 +188,7 @@ export interface ConvMeta {
   tags?: string[];
 }
 
-export type McpTransport = "http" | "sse" | "stdio";
+export type McpTransport = "http" | "sse" | "stdio" | "native";
 
 export interface McpServerConfig {
   id: string;

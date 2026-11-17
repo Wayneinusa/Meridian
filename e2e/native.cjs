@@ -41,12 +41,16 @@ function startMock() {
         return res.end(JSON.stringify({ data: [{ type: "model", id: "claude-opus-5-5", display_name: "Claude Opus 5.5", created_at: "2026-01-01T00:00:00Z", max_input_tokens: 1000000, max_tokens: 128000, capabilities: null }], has_more: false, first_id: "claude-opus-5-5", last_id: "claude-opus-5-5" }));
       }
       const body = JSON.parse(raw);
-      requests.push({ body, headers: req.headers });
+      const sysText = Array.isArray(body.system) ? body.system.map((b) => b.text).join(" ") : (body.system ?? "");
+      const isTitle = /You name conversations/.test(sysText);
+      if (!isTitle) requests.push({ body, headers: req.headers });
       const last = body.messages[body.messages.length - 1];
       const toolResult = Array.isArray(last.content) && last.content.find((b) => b.type === "tool_result");
       const userText = Array.isArray(last.content) ? last.content.filter((b) => b.type === "text").map((b) => b.text).join(" ") : String(last.content);
       let blocks, stop = "end_turn";
-      if (toolResult) {
+      if (isTitle) {
+        blocks = [{ type: "text", text: "hello" }];
+      } else if (toolResult) {
         const t = toolResult.content.map((c) => c.text ?? "").join("");
         blocks = [{ type: "text", text: `Tool said: ${t.slice(0, 200)}` }];
       } else if (/run a command/.test(userText)) {

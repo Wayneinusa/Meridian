@@ -49,7 +49,8 @@ function toolLabel(name: string): string {
 function toolSummary(input: unknown): string {
   if (!input || typeof input !== "object") return "";
   const i = input as Record<string, unknown>;
-  for (const key of ["command", "filename", "path", "url", "query", "prompt", "target", "id", "keys", "text", "action"]) {
+  if (Array.isArray(i.steps)) return `${i.steps.length} steps`;
+  for (const key of ["label", "question", "command", "filename", "path", "url", "query", "prompt", "target", "id", "keys", "text", "action", "task", "name", "place"]) {
     if (typeof i[key] === "string") return i[key] as string;
   }
   const s = JSON.stringify(input);

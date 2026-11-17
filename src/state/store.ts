@@ -23,6 +23,7 @@ import { emptySyncState, syncWithRemote, type SyncState } from "../storage/sync"
 import { chatToHtml, chatToMarkdown, detectAndImport } from "../storage/transfer";
 import { extractText } from "../tools/extract";
 import { buildDocx, buildPdf } from "../tools/files";
+import { nativeTools } from "../connectors/native";
 import { mcpManager } from "../tools/mcp";
 import { mediaModelFor, noMediaModelMessage } from "../tools/media";
 import type { Tool } from "../tools/types";
@@ -687,7 +688,10 @@ export const host: EngineHost = {
   blobs,
   getKey,
   getSecret: (name) => getSecret(name),
-  connectorTools: (settings) => mcpManager.tools(allConnectors(settings)),
+  connectorTools: async (settings) => {
+    const all = allConnectors(settings);
+    return [...(await mcpManager.tools(all.filter((c) => c.transport !== "native"))), ...(await nativeTools(all))];
+  },
   render: (c) => render(c.id),
   save: (c, soon) => (soon ? saveSoon(c.id, 3000) : saveNow(c.id)),
   setBusy,
@@ -1147,6 +1151,20 @@ export async function importBackupFile(file: File) {
   scheduleSync();
   return r;
 }
+
+/** Keep a conversation made elsewhere (automations) in memory and on disk. */
+export async function adoptConversation(c: Conversation) {
+  live.set(c.id, c);
+  await repo.save(c);
+  refreshMetas();
+  render(c.id);
+}
+
+export function liveConversation(id: string | undefined): Conversation | undefined {
+  return id ? live.get(id) : undefined;
+}
+
+export { setBusy as setConversationBusy };
 
 export async function loadBlob(blobId: string) {
   return repo.getBlob(blobId);

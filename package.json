@@ -10,7 +10,9 @@
     "preview": "vite preview --port 4173 --strictPort",
     "test": "vitest run",
     "e2e": "node e2e/run.cjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "e2e:features": "node e2e/features.cjs",
+    "e2e:native": "node e2e/native.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.9.0",

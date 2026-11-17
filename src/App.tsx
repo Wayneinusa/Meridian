@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { startAutomations } from "./automations/runner";
+import { startBackground } from "./platform/background";
 import { init, useApp } from "./state/store";
 import { Chat } from "./ui/Chat";
 import { PermissionDialog, PreviewDialog, QuestionDialog, Toasts } from "./ui/Dialogs";
@@ -8,10 +10,12 @@ import { SearchPage, UsagePage } from "./ui/pages/Misc";
 import { ProjectPage, ProjectsPage } from "./ui/pages/Projects";
 import { PromptsPage } from "./ui/pages/Prompts";
 import { Icon } from "./ui/icons";
+import { Shortcuts } from "./ui/Shortcuts";
 import { SettingsModal } from "./ui/SettingsModal";
 import { Sidebar } from "./ui/Sidebar";
 
 let started = false;
+startAutomations();
 
 export function App() {
   const ready = useApp((s) => s.ready);
@@ -23,7 +27,9 @@ export function App() {
   useEffect(() => {
     if (started) return;
     started = true;
-    init().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    init()
+      .then(() => startBackground())
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
   if (error) {
@@ -64,6 +70,7 @@ export function App() {
       <PreviewDialog />
       <PermissionDialog />
       <QuestionDialog />
+      <Shortcuts />
       <Toasts />
     </div>
   );

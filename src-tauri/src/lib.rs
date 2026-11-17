@@ -8,9 +8,11 @@
 //! - local MCP servers over stdio (desktop only)
 //! - the iCloud container (iOS, iPadOS, macOS)
 
+mod background;
 mod fs_cmds;
 mod icloud;
 mod mcp;
+mod oauth;
 mod platform;
 mod screen;
 mod secrets;
@@ -22,6 +24,9 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init())
+        .manage(oauth::OAuthState::default())
         .manage(mcp::McpState::default())
         .manage(screen::ScreenState::default())
         .invoke_handler(tauri::generate_handler![
@@ -44,7 +49,18 @@ pub fn run() {
             screen::screenshot,
             screen::input_action,
             icloud::icloud_prepare,
+            oauth::oauth_listen,
+            oauth::oauth_wait,
+            background::set_background,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if background::keep_in_background() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running Meridian");
 }

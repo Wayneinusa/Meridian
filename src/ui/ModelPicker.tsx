@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelKind } from "../types";
-import { currentModelRef, setChatModel, useApp } from "../state/store";
+import { currentModelRef, setChatModel, toggleFavorite, useApp } from "../state/store";
 import { findModel } from "../providers/registry";
 import type { ModelInfo } from "../types";
 import { Icon } from "./icons";
@@ -46,9 +46,9 @@ export function ModelPicker() {
       .filter((p) => p.enabled)
       .map((p) => ({
         provider: p,
-        models: p.models.filter(
-          (m) => (m.kind === tab || (tab === "image" && m.kind === "chat" && m.caps.imageOutput)) && (!q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)),
-        ),
+        models: p.models
+          .filter((m) => (m.kind === tab || (tab === "image" && m.kind === "chat" && m.caps.imageOutput)) && (!q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)))
+          .sort((a, b) => Number(settings.favorites.includes(`${p.id}::${b.id}`)) - Number(settings.favorites.includes(`${p.id}::${a.id}`))),
       }))
       .filter((g) => g.models.length);
   }, [settings.providers, query, tab]);
@@ -97,6 +97,18 @@ export function ModelPicker() {
                       setOpen(false);
                     }}
                   >
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className={`star ${settings.favorites.includes(`${g.provider.id}::${m.id}`) ? "on" : ""}`}
+                      title="Favourite (shown first)"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void toggleFavorite({ providerId: g.provider.id, modelId: m.id });
+                      }}
+                    >
+                      ★
+                    </span>
                     <span className="grow" title={m.id}>{m.name}</span>
                     <span className="muted" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>{capBadges(m).join(" · ")}</span>
                   </button>

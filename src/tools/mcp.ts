@@ -4,6 +4,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke, isTauri, platform } from "../platform";
 import { httpFetch, readError } from "../platform/http";
+import { accessToken, resourceMetadataFrom } from "../connectors/oauth";
 import { getSecret, mcpTokenName } from "../platform/secrets";
 import { sseEvents } from "../providers/common";
 import type { BlobRef, McpServerConfig } from "../types";
@@ -32,18 +33,30 @@ interface Transport {
   close(): Promise<void>;
 }
 
+/** Thrown when a connector needs the user to sign in (OAuth). */
+export class NeedsSignIn extends Error {
+  constructor(public resourceMetadata?: string) {
+    super("Sign in to use this connector.");
+    this.name = "NeedsSignIn";
+  }
+}
+
+type AuthFn = (force: boolean) => Promise<string | null>;
+
 class HttpTransport implements Transport {
   private nextId = 1;
   private sessionId: string | null = null;
   negotiated: string | null = null;
-  constructor(private url: string, private headers: Record<string, string>) {}
+  constructor(private url: string, private headers: Record<string, string>, private auth?: AuthFn) {}
 
-  private baseHeaders(): Record<string, string> {
+  private async baseHeaders(force = false): Promise<Record<string, string>> {
     const h: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       ...this.headers,
     };
+    const token = this.auth ? await this.auth(force) : null;
+    if (token) h.Authorization = `Bearer ${token}`;
     if (this.sessionId) h["Mcp-Session-Id"] = this.sessionId;
     if (this.negotiated) h["MCP-Protocol-Version"] = this.negotiated;
     return h;
@@ -51,14 +64,16 @@ class HttpTransport implements Transport {
 
   async request(method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
     const id = this.nextId++;
-    const res = await httpFetch(this.url, {
-      method: "POST",
-      headers: this.baseHeaders(),
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-      signal,
-    });
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(`The connector refused access (${res.status}). Check its access token in Settings → Connectors.`);
+    const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    let res = await httpFetch(this.url, { method: "POST", headers: await this.baseHeaders(), body, signal });
+    if (res.status === 401 && this.auth) {
+      // the token may have expired: refresh once
+      const h = await this.baseHeaders(true);
+      if (h.Authorization) res = await httpFetch(this.url, { method: "POST", headers: h, body, signal });
+    }
+    if (res.status === 401) throw new NeedsSignIn(resourceMetadataFrom(res.headers.get("www-authenticate")));
+    if (res.status === 403) {
+      throw new Error(`The connector refused access (403). Check its access token or sign in again in Settings → Connectors.`);
     }
     if (!res.ok) throw new Error(await readError(res));
     const sid = res.headers.get("mcp-session-id");
@@ -82,7 +97,7 @@ class HttpTransport implements Transport {
   async notify(method: string, params?: unknown): Promise<void> {
     const res = await httpFetch(this.url, {
       method: "POST",
-      headers: this.baseHeaders(),
+      headers: await this.baseHeaders(),
       body: JSON.stringify({ jsonrpc: "2.0", method, params }),
     });
     try {
@@ -95,10 +110,91 @@ class HttpTransport implements Transport {
   async close(): Promise<void> {
     if (!this.sessionId) return;
     try {
-      await httpFetch(this.url, { method: "DELETE", headers: this.baseHeaders() });
+      await httpFetch(this.url, { method: "DELETE", headers: await this.baseHeaders() });
     } catch {
       /* best effort */
     }
+  }
+}
+
+/** The older HTTP+SSE transport: a long-lived event stream plus POSTs to the endpoint it announces. */
+class SseTransport implements Transport {
+  private nextId = 1;
+  private endpoint: string | null = null;
+  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private abort = new AbortController();
+  constructor(private url: string, private headers: Record<string, string>, private auth?: AuthFn) {}
+
+  private async h(): Promise<Record<string, string>> {
+    const token = this.auth ? await this.auth(false) : null;
+    return { ...this.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  }
+
+  async start(): Promise<void> {
+    const res = await httpFetch(this.url, { headers: { Accept: "text/event-stream", ...(await this.h()) }, signal: this.abort.signal });
+    if (res.status === 401) throw new NeedsSignIn(resourceMetadataFrom(res.headers.get("www-authenticate")));
+    if (!res.ok) throw new Error(await readError(res));
+    let ready: () => void = () => undefined;
+    const gotEndpoint = new Promise<void>((r) => (ready = r));
+    void (async () => {
+      try {
+        for await (const ev of sseEvents(res, this.abort.signal)) {
+          if (ev.event === "endpoint") {
+            this.endpoint = new URL(ev.data.trim(), this.url).toString();
+            ready();
+            continue;
+          }
+          let msg: RpcResponse;
+          try {
+            msg = JSON.parse(ev.data);
+          } catch {
+            continue;
+          }
+          if (typeof msg.id === "number" && this.pending.has(msg.id)) {
+            const w = this.pending.get(msg.id)!;
+            this.pending.delete(msg.id);
+            try {
+              w.resolve(unwrap(msg));
+            } catch (e) {
+              w.reject(e as Error);
+            }
+          }
+        }
+      } catch {
+        /* stream closed */
+      }
+      for (const w of this.pending.values()) w.reject(new Error("The connector closed the connection."));
+      this.pending.clear();
+    })();
+    await Promise.race([gotEndpoint, new Promise((_, rej) => setTimeout(() => rej(new Error("The connector did not announce its message endpoint.")), 20_000))]);
+  }
+
+  async request(method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
+    const id = this.nextId++;
+    const result = new Promise<unknown>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      signal?.addEventListener("abort", () => {
+        this.pending.delete(id);
+        reject(new DOMException("Aborted", "AbortError"));
+      });
+      setTimeout(() => {
+        if (this.pending.delete(id)) reject(new Error(`The connector did not answer "${method}" within 120 seconds.`));
+      }, 120_000);
+    });
+    const res = await httpFetch(this.endpoint!, { method: "POST", headers: { "Content-Type": "application/json", ...(await this.h()) }, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }), signal });
+    if (!res.ok && res.status !== 202) {
+      this.pending.delete(id);
+      throw new Error(await readError(res));
+    }
+    return result;
+  }
+
+  async notify(method: string, params?: unknown): Promise<void> {
+    await httpFetch(this.endpoint!, { method: "POST", headers: { "Content-Type": "application/json", ...(await this.h()) }, body: JSON.stringify({ jsonrpc: "2.0", method, params }) });
+  }
+
+  async close(): Promise<void> {
+    this.abort.abort();
   }
 }
 
@@ -200,7 +296,13 @@ export class McpClient {
       const headers: Record<string, string> = { ...(this.cfg.headers ?? {}) };
       const token = await getSecret(mcpTokenName(this.cfg.id));
       if (token) headers.Authorization = `Bearer ${token}`;
-      this.transport = new HttpTransport(this.cfg.url, headers);
+      // OAuth tokens (from Sign in) are attached and refreshed per request
+      const auth: AuthFn | undefined = token ? undefined : (force) => accessToken(this.cfg.id, force);
+      if (this.cfg.transport === "sse") {
+        const t = new SseTransport(this.cfg.url, headers, auth);
+        await t.start();
+        this.transport = t;
+      } else this.transport = new HttpTransport(this.cfg.url, headers, auth);
     }
     const init = (await this.transport.request(
       "initialize",
@@ -255,9 +357,10 @@ function slug(s: string): string {
 }
 
 export interface ConnectorStatus {
-  state: "idle" | "connecting" | "ready" | "error";
+  state: "idle" | "connecting" | "ready" | "error" | "signin";
   error?: string;
   tools: McpToolInfo[];
+  resourceMetadata?: string;
 }
 
 /** Keeps one live client per enabled connector and exposes their tools to the agent. */
@@ -288,7 +391,8 @@ class McpManager {
         this.emit();
       },
       (e) => {
-        this.status.set(cfg.id, { state: "error", error: e instanceof Error ? e.message : String(e), tools: [] });
+        if (e instanceof NeedsSignIn) this.status.set(cfg.id, { state: "signin", error: e.message, tools: [], resourceMetadata: e.resourceMetadata });
+        else this.status.set(cfg.id, { state: "error", error: e instanceof Error ? e.message : String(e), tools: [] });
         this.clients.delete(cfg.id);
         this.emit();
       },
