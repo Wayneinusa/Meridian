@@ -1,7 +1,7 @@
 // Core data model. Everything in here is plain JSON so it can be written to
 // disk, synced through a folder (iCloud Drive) and packed into backups.
 
-export type ProviderKind = "anthropic" | "openai" | "gemini" | "openai-compatible";
+export type ProviderKind = "anthropic" | "openai" | "gemini" | "xai" | "openai-compatible";
 
 export interface ModelCaps {
   /** accepts image input */
@@ -44,6 +44,20 @@ export interface ProviderConfig {
   models: ModelInfo[];
   /** set once a key has been stored in the OS keychain (the key itself never lives here) */
   hasKey?: boolean;
+  /** extra HTTP headers sent with every request (non-secret) */
+  headers?: Record<string, string>;
+}
+
+/** Options for image and video generation. Unset fields use the model's default. */
+export interface MediaOptions {
+  aspect?: "1:1" | "16:9" | "9:16" | "4:3" | "3:4" | "3:2" | "2:3";
+  /** images per request (1-4) */
+  count?: number;
+  /** video length in seconds */
+  seconds?: number;
+  /** e.g. "720p", "1080p" for video, "1k"/"2k" or "standard"/"hd" for images */
+  resolution?: string;
+  quality?: "auto" | "low" | "medium" | "high";
 }
 
 export interface ModelRef {
@@ -126,6 +140,10 @@ export interface Conversation {
   systemPrompt?: string;
   /** parameter overrides for this chat only */
   params?: ModelParams;
+  /** options for image / video generation in this chat */
+  media?: MediaOptions;
+  /** the chat model to return to after switching to image or video mode */
+  chatModel?: ModelRef;
   messages: Message[];
   /** message id -> time it was removed (regenerate / edit), so merges do not resurrect it */
   removed: Record<string, number>;

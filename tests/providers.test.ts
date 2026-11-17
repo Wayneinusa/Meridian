@@ -182,7 +182,7 @@ describe("media generation", () => {
       return Response.json({ candidates: [{ content: { parts: [{ text: "ok" }, { inlineData: { mimeType: "image/png", data: png } }] } }] });
     });
     const p = provider("gemini", "https://g/v1beta");
-    const a = await generateImages({ provider: p, apiKey: "k", model: model({ id: "imagen-4.0-generate-001", kind: "image" }), prompt: "cat", shape: "portrait", count: 2 });
+    const a = await generateImages({ provider: p, apiKey: "k", model: model({ id: "imagen-4.0-generate-001", kind: "image" }), prompt: "cat", options: { aspect: "9:16", count: 2 } });
     expect(a).toHaveLength(2);
     expect(seen[0].body).toEqual({ instances: [{ prompt: "cat" }], parameters: { sampleCount: 2, aspectRatio: "9:16" } });
     const b = await generateImages({ provider: p, apiKey: "k", model: model({ id: "gemini-2.5-flash-image" }), prompt: "cat" });
@@ -207,11 +207,11 @@ describe("media generation", () => {
       return Response.json({ id: "vid_1", status: polls < 3 ? "in_progress" : "completed", progress: polls * 30 });
     });
     const notes: string[] = [];
-    const out = await generateVideo({ provider: provider("openai", "https://api.openai.com/v1"), apiKey: "k", model: model({ id: "sora-2", kind: "video" }), prompt: "waves", shape: "portrait", seconds: 8, pollMs: 1, onProgress: (n) => notes.push(n) });
+    const out = await generateVideo({ provider: provider("openai", "https://api.openai.com/v1"), apiKey: "k", model: model({ id: "sora-2", kind: "video" }), prompt: "waves", options: { aspect: "9:16", seconds: 8 }, pollMs: 1, onProgress: (n) => notes.push(n) });
     expect(out).toMatchObject({ mime: "video/mp4" });
     expect(out.bytes.length).toBe(4);
     expect(log).toEqual(["POST https://api.openai.com/v1/videos", "GET https://api.openai.com/v1/videos/vid_1", "GET https://api.openai.com/v1/videos/vid_1", "GET https://api.openai.com/v1/videos/vid_1", "GET https://api.openai.com/v1/videos/vid_1/content"]);
-    expect(notes).toEqual(["30%", "60%", "90%"]);
+    expect(notes).toEqual(["queued", "30%", "60%", "downloading"]);
   });
 
   it("runs a Veo long-running operation and surfaces failures", async () => {
@@ -231,6 +231,6 @@ describe("media generation", () => {
 
     vi.stubGlobal("fetch", async (url: string) => (url.endsWith(":predictLongRunning") ? Response.json({ name: "op" }) : Response.json({ done: true, error: { message: "quota exceeded" } })));
     await expect(generateVideo({ provider: p, apiKey: "k", model: model({ id: "veo", kind: "video" }), prompt: "x", pollMs: 1 })).rejects.toThrow("quota exceeded");
-    await expect(generateVideo({ provider: provider("anthropic", "x"), apiKey: "k", model: model(), prompt: "x" })).rejects.toThrow(/does not generate video/);
+    await expect(generateVideo({ provider: provider("anthropic", "x"), apiKey: "k", model: model(), prompt: "x" })).rejects.toThrow(/do not create video/);
   });
 });

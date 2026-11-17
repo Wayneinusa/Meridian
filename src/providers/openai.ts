@@ -14,6 +14,7 @@ function headers(provider: ProviderConfig, apiKey: string): Record<string, strin
   const h: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) h.Authorization = `Bearer ${apiKey}`;
   if (/openrouter\.ai/.test(provider.baseUrl)) h["X-Title"] = "Meridian";
+  Object.assign(h, provider.headers ?? {});
   // Local servers (Ollama, LM Studio) refuse browser origins they do not know.
   // In the app, an empty Origin makes the native HTTP client send no Origin at all.
   if (isTauri && provider.kind === "openai-compatible") h.Origin = "";
@@ -22,28 +23,40 @@ function headers(provider: ProviderConfig, apiKey: string): Record<string, strin
 
 const NOT_CHAT = /embed|whisper|tts|audio|realtime|moderation|transcri|rerank|davinci-00|babbage|guard|speech|computer-use/i;
 
+const VIDEO_ID = /sora|video|veo|kling|wan-?2|hailuo|seedance|luma-ray|runway|pika|ltx-?video|mochi/;
+const IMAGE_ID = /dall-e|gpt-image|chatgpt-image|image-gen|imagen|flux|stable-diffusion|sdxl|sd3|recraft|ideogram|seedream|hidream|qwen-image|playground-v|kandinsky|imagine-image|grok-[\d.]+-image|(^|[-_/])image([-_.]|$)/;
+
+/** chat / image / video from a model id alone */
+export function classifyMediaId(lower: string): ModelInfo["kind"] {
+  if (VIDEO_ID.test(lower)) return "video";
+  if (IMAGE_ID.test(lower)) return "image";
+  return "chat";
+}
+
 export function guessOpenAIModel(provider: ProviderConfig, raw: Json): ModelInfo | null {
   const id = String(raw.id ?? "");
   if (!id || NOT_CHAT.test(id)) return null;
-  const official = provider.kind === "openai";
+  const official = provider.kind === "openai" || provider.kind === "xai";
   const arch = raw.architecture as { input_modalities?: string[]; output_modalities?: string[] } | undefined;
   const supported = raw.supported_parameters as string[] | undefined;
   const lower = id.toLowerCase();
 
-  let kind: ModelInfo["kind"] = "chat";
-  if (/sora|video|veo|kling|wan-/.test(lower)) kind = "video";
-  else if (/dall-e|gpt-image|image-gen|imagen|flux|stable-diffusion|sdxl|recraft|ideogram/.test(lower)) kind = "image";
+  let kind: ModelInfo["kind"] = classifyMediaId(lower);
   if (arch?.output_modalities && !arch.output_modalities.includes("text")) {
     kind = arch.output_modalities.includes("video") ? "video" : arch.output_modalities.includes("image") ? "image" : kind;
   }
 
   const vision = arch?.input_modalities
     ? arch.input_modalities.includes("image")
+    : kind === "image"
+    ? /gpt-image|imagine-image|grok-[\d.]+-image|kontext|edit|seedream|qwen-image/.test(lower)
+    : kind === "video"
+    ? /sora|veo|imagine-video|kling|wan|seedance|hailuo/.test(lower)
     : /gpt-4o|gpt-4\.1|gpt-4\.5|gpt-5|gpt-6|^o[1-9]|chatgpt|vision|llava|gemma-?3|qwen.*vl|pixtral|claude|gemini|grok-[3-9]|grok.*vision|llama-?[34]\.\d.*vision|llama-4|minicpm|moondream|phi-?[34].*vision|mistral-(small|medium|large)-(3|2[5-9])/.test(lower);
   const thinking = supported
     ? supported.includes("reasoning") || supported.includes("include_reasoning")
     : /^o[1-9]|gpt-5|gpt-6|reason|think|deepseek-r|qwq|magistral|grok-[4-9]/.test(lower);
-  const tools = supported ? supported.includes("tools") : !/instruct|base$|completion/.test(lower);
+  const tools = kind !== "chat" ? false : supported ? supported.includes("tools") : !/instruct|base$|completion/.test(lower);
 
   return {
     id,
@@ -51,7 +64,7 @@ export function guessOpenAIModel(provider: ProviderConfig, raw: Json): ModelInfo
     kind,
     caps: {
       vision,
-      pdf: arch?.input_modalities ? arch.input_modalities.includes("file") : official && vision,
+      pdf: kind !== "chat" ? false : arch?.input_modalities ? arch.input_modalities.includes("file") : provider.kind === "openai" && vision,
       tools,
       thinking,
       imageOutput: !!arch?.output_modalities?.includes("image") && kind === "chat",
@@ -111,8 +124,11 @@ async function toMessages(req: ChatRequest): Promise<Json[]> {
 export function buildOpenAIBody(req: ChatRequest, messages: Json[]): Json {
   const p = req.options.params;
   const official = req.provider.kind === "openai";
+  const xai = req.provider.kind === "xai";
   const body: Json = { model: req.model.id, messages, stream: true };
-  if (official) body.stream_options = { include_usage: true };
+  if (official || xai || /openrouter\.ai/.test(req.provider.baseUrl)) body.stream_options = { include_usage: true };
+  // gateways (OpenRouter) only return pictures from image-output models when asked to
+  if (req.model.caps.imageOutput) body.modalities = ["image", "text"];
   if (req.tools.length) {
     body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
     if (p.toolChoice) body.tool_choice = p.toolChoice;
@@ -127,13 +143,14 @@ export function buildOpenAIBody(req: ChatRequest, messages: Json[]): Json {
   if (p.logitBias && Object.keys(p.logitBias).length) body.logit_bias = p.logitBias;
   if (p.responseFormat === "json") body.response_format = { type: "json_object" };
   if (p.maxTokens !== undefined) body[official ? "max_completion_tokens" : "max_tokens"] = p.maxTokens;
-  if (p.effort && p.effort !== "auto" && req.model.caps.thinking) {
+  // xAI only accepts reasoning_effort on its mini reasoning models
+  if (p.effort && p.effort !== "auto" && req.model.caps.thinking && (!xai || /mini/.test(req.model.id))) {
     // this dialect knows low / medium / high
     body.reasoning_effort = p.effort === "xhigh" || p.effort === "max" ? "high" : p.effort;
   }
-  if (official) {
-    if (p.verbosity) body.verbosity = p.verbosity;
-    if (p.serviceTier) body.service_tier = p.serviceTier;
+  if (official || xai) {
+    if (official && p.verbosity) body.verbosity = p.verbosity;
+    if (official && p.serviceTier) body.service_tier = p.serviceTier;
   } else {
     if (p.topK !== undefined) body.top_k = p.topK;
     if (p.minP !== undefined) body.min_p = p.minP;

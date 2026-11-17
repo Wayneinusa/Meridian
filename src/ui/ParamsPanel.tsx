@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { PARAM_SPECS, paramUnsupportedReason, resolveParams, type ParamSpec } from "../providers/params";
 import { findModel } from "../providers/registry";
-import { currentModelRef, draftParams, setChatParams, setChatSystemPrompt, updateSettings, useApp } from "../state/store";
+import { currentModelRef, setChatParams, setChatSystemPrompt, updateSettings, useApp } from "../state/store";
 import type { ModelParams } from "../types";
 import { modelKey } from "../types";
 import { Icon } from "./icons";
@@ -147,7 +147,8 @@ export function ParamsPanel() {
   const found = findModel(settings, ref);
   const key = modelKey(ref);
 
-  const chatParams = active ? (active.params ?? {}) : (draftParams() ?? {});
+  const draftState = useApp((s) => s.draft);
+  const chatParams = active ? (active.params ?? {}) : (draftState.params ?? {});
   const values: ModelParams = scope === "chat" ? chatParams : scope === "model" ? (settings.modelParams[key] ?? {}) : settings.params;
   // what the next level down would supply if this level leaves a field unset
   const inherited: ModelParams =

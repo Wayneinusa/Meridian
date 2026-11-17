@@ -14,9 +14,10 @@ import { blobRefsOf, emptyConversation } from "../storage/merge";
 import { blobKey, Repo } from "../storage/repo";
 import { emptySyncState, syncWithRemote, type SyncState } from "../storage/sync";
 import { activeTools, type Tool, type ToolContext } from "../tools";
+import { createMedia, mediaModelFor, noMediaModelMessage } from "../tools/media";
 import { extractText } from "../tools/extract";
 import { validateInput } from "../tools/validate";
-import type { BlobRef, Conversation, ConvMeta, Message, ModelParams, ModelRef, Part, Settings, ToolResultData } from "../types";
+import type { BlobRef, Conversation, ConvMeta, MediaOptions, Message, ModelParams, ModelRef, Part, Settings, ToolResultData } from "../types";
 import { uid } from "../types";
 import { bytesToBase64, formatBytes, mimeFromName } from "../util/bytes";
 import { defaultSettings, migrateSettings } from "./defaults";
@@ -60,6 +61,17 @@ interface State {
   settingsTab: string | null;
   paramsOpen: boolean;
   preview: BlobRef | null;
+  /** files handed to the composer from elsewhere (e.g. "Edit" on a generated image) */
+  composerInbox: { parts: Extract<Part, { type: "attachment" }>[]; seq: number };
+  /** choices made on the empty "new chat" screen, before a conversation exists */
+  draft: Draft;
+}
+
+export interface Draft {
+  model?: ModelRef;
+  params?: ModelParams;
+  media?: MediaOptions;
+  chatModel?: ModelRef;
 }
 
 export const useApp = create<State>(() => ({
@@ -76,6 +88,8 @@ export const useApp = create<State>(() => ({
   settingsTab: null,
   paramsOpen: false,
   preview: null,
+  composerInbox: { parts: [], seq: 0 },
+  draft: {},
 }));
 
 const set = useApp.setState;
@@ -254,7 +268,7 @@ export async function refreshModels(providerId: string): Promise<number> {
 
 export function currentModelRef(conv?: Conversation | null): ModelRef | undefined {
   const s = get().settings;
-  const candidates = [conv?.model, s.defaultModel];
+  const candidates = [conv?.model, conv ? undefined : get().draft.model, s.defaultModel];
   for (const ref of candidates) if (findModel(s, ref)) return ref;
   for (const p of s.providers) {
     if (!p.enabled) continue;
@@ -279,7 +293,7 @@ export async function openChat(id: string) {
 }
 
 export function newChat() {
-  set({ activeId: null, active: null, paramsOpen: false });
+  set({ activeId: null, active: null, paramsOpen: false, draft: {} });
   if (typeof window !== "undefined" && window.innerWidth <= 860) set({ sidebarOpen: false });
 }
 
@@ -287,43 +301,92 @@ function ensureConversation(): Conversation {
   const id = get().activeId;
   if (id && live.has(id)) return live.get(id)!;
   const c = emptyConversation(uid("c"), Date.now());
-  c.model = pendingModel ?? currentModelRef(null);
-  c.params = pendingParams;
-  pendingModel = undefined;
-  pendingParams = undefined;
+  const d = draft();
+  c.model = d.model ?? currentModelRef(null);
+  c.params = d.params;
+  c.media = d.media;
+  c.chatModel = d.chatModel;
+  set({ draft: {} });
   live.set(c.id, c);
   set({ activeId: c.id, active: { ...c } });
   return c;
 }
 
-// choices made on the empty "new chat" screen, before a conversation exists
-let pendingModel: ModelRef | undefined;
-let pendingParams: ModelParams | undefined;
-export const draftModel = () => pendingModel;
-export const draftParams = () => pendingParams;
+const draft = () => get().draft;
+const setDraft = (patch: Partial<Draft>) => set((s) => ({ draft: { ...s.draft, ...patch } }));
+export const draftModel = () => draft().model;
+export const draftParams = () => draft().params;
+export const draftMedia = () => draft().media;
 
 export async function setChatModel(ref: ModelRef) {
+  const settings = get().settings;
+  const kind = findModel(settings, ref)?.model.kind ?? "chat";
   const id = get().activeId;
   const c = id ? live.get(id) : undefined;
+  const current = c ? c.model : draft().model;
+  // remember the chat model so the Chat button can switch back after making pictures
+  const curKind = findModel(settings, current)?.model.kind ?? "chat";
   if (!c) {
-    pendingModel = ref;
-    set({}); // re-render pickers
-    await updateSettings({ defaultModel: ref });
+    setDraft({ model: ref, ...(kind !== "chat" && curKind === "chat" ? { chatModel: current ?? currentModelRef(null) } : {}) });
+  } else {
+    if (kind !== "chat" && curKind === "chat") c.chatModel = current;
+    c.model = ref;
+    touch(c);
+    render(c.id);
+    await saveNow(c.id);
+  }
+  if (kind === "chat") await updateSettings({ defaultModel: ref });
+  else if (kind === "image") await updateSettings({ imageModel: ref });
+  else await updateSettings({ videoModel: ref });
+}
+
+export function currentKind(conv?: Conversation | null): "chat" | "image" | "video" {
+  return findModel(get().settings, conv ? currentModelRef(conv) : (draft().model ?? currentModelRef(null)))?.model.kind ?? "chat";
+}
+
+/** Chat / Image / Video switch in the composer. */
+export async function setChatMode(mode: "chat" | "image" | "video"): Promise<boolean> {
+  const settings = get().settings;
+  const c = live.get(get().activeId ?? "");
+  if (mode === "chat") {
+    const back = (c ? c.chatModel : draft().chatModel) ?? settings.defaultModel;
+    const ref = back && findModel(settings, back)?.model.kind === "chat" ? back : undefined;
+    const fallback = ref ?? settings.providers.flatMap((p) => p.models.filter((m) => m.kind === "chat").map((m) => ({ providerId: p.id, modelId: m.id })))[0];
+    if (!fallback) return false;
+    await setChatModel(fallback);
+    return true;
+  }
+  const ref = mediaModelFor(settings, mode);
+  if (!ref) {
+    toast(noMediaModelMessage(mode), "error");
+    return false;
+  }
+  await setChatModel(ref);
+  return true;
+}
+
+export async function setChatMedia(media: MediaOptions) {
+  const c = live.get(get().activeId ?? "");
+  if (!c) {
+    setDraft({ media });
     return;
   }
-  c.model = ref;
+  c.media = media;
   touch(c);
   render(c.id);
-  await saveNow(c.id);
-  await updateSettings({ defaultModel: ref });
+  saveSoon(c.id, 300);
+}
+
+/** Put files into the composer (used by "Edit" / "Animate" on generated pictures). */
+export function attachToComposer(refs: BlobRef[]) {
+  set((s) => ({ composerInbox: { parts: refs.map((r) => ({ type: "attachment" as const, blobId: r.blobId, name: r.name, mime: r.mime, size: r.size })), seq: s.composerInbox.seq + 1 } }));
 }
 
 export async function setChatParams(params: ModelParams | undefined) {
   const id = get().activeId;
   const c = id ? live.get(id) : undefined;
   if (!c) {
-    pendingParams = params;
-    set({});
+    setDraft({ params });
     return;
   }
   c.params = params && Object.keys(params).length ? params : undefined;
@@ -510,6 +573,37 @@ function toolContext(c: Conversation, signal: AbortSignal): ToolContext {
   };
 }
 
+/** A turn in a chat whose model is an image or video model: the last message is the prompt. */
+async function runMediaTurn(c: Conversation, ref: ModelRef, kind: "image" | "video", modelName: string, signal: AbortSignal, onId: (id: string) => void) {
+  const lastUser = [...c.messages].reverse().find((m) => m.role === "user");
+  if (!lastUser) return;
+  const prompt = lastUser.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n").trim();
+  const inputs = lastUser.parts.filter((p): p is Extract<Part, { type: "attachment" }> => p.type === "attachment" && p.mime.startsWith("image/"));
+  if (!prompt) throw new Error(kind === "image" ? "Describe the picture you want." : "Describe the video you want.");
+  const now = nextMessageTime(c);
+  const assistant: Message = { id: uid("m"), role: "assistant", createdAt: now, updatedAt: now, parts: [], model: ref };
+  onId(assistant.id);
+  c.messages.push(assistant);
+  render(c.id);
+  setBusy(c.id, kind === "image" ? (inputs.length ? "editing image" : "creating image") : "starting video");
+  const { refs } = await createMedia(
+    { kind, prompt, inputs, options: c.media, model: ref },
+    {
+      settings: get().settings,
+      getKey,
+      loadBlob: (id) => repo.getBlob(id),
+      saveBlob: (bytes, mime, name) => repo.putBlob(bytes, mime, name),
+      signal,
+      progress: (note) => setBusy(c.id, note),
+    },
+  );
+  patchMessage(c, assistant.id, {
+    parts: refs.map((r) => ({ type: "artifact" as const, origin: "model" as const, ...r })),
+    stopReason: "end",
+  });
+  void modelName;
+}
+
 async function runAgent(convId: string) {
   const c = live.get(convId);
   if (!c) return;
@@ -526,7 +620,10 @@ async function runAgent(convId: string) {
       const found = findModel(settings, ref);
       if (!found) throw new Error("No model is selected. Add an API key in Settings → Providers and pick a model.");
       const { provider, model } = found;
-      if (model.kind !== "chat") throw new Error(`${model.name} is a ${model.kind} model. Pick a chat model; it can call ${model.name} through the generation tools.`);
+      if (model.kind !== "chat") {
+        await runMediaTurn(c, ref!, model.kind, model.name, abort.signal, (id) => (assistantId = id));
+        break;
+      }
       const apiKey = await getKey(provider.id);
       if (!apiKey && provider.kind !== "openai-compatible") {
         throw new Error(`No API key for ${provider.name}. Add one in Settings → Providers.`);

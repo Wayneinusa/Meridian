@@ -60,7 +60,7 @@ function openaiStream(text) {
   return lines.join("");
 }
 
-const seen = { anthropic: [], openai: [], images: [], mcp: [] };
+const seen = { anthropic: [], openai: [], images: [], mcp: [], xai: [], sora: [] };
 
 function lastUserText(body) {
   const last = body.messages[body.messages.length - 1];
@@ -107,7 +107,7 @@ async function installMocks(page) {
       blocks = [{ type: "tool_use", id: "toolu_fetch1", name: "fetch_url", input: { url: "https://news.example.org/today" } }];
       stop = "tool_use";
     } else if (/draw/i.test(text)) {
-      blocks = [{ type: "tool_use", id: "toolu_img1", name: "generate_image", input: { prompt: "A lighthouse at dawn, watercolor", shape: "landscape" } }];
+      blocks = [{ type: "tool_use", id: "toolu_img1", name: "generate_image", input: { prompt: "A lighthouse at dawn, watercolor", aspect_ratio: "16:9" } }];
       stop = "tool_use";
     } else if (/connector/i.test(text)) {
       const tool = (body.tools ?? []).find((t) => t.name && t.name.startsWith("mcp__"));
@@ -133,9 +133,34 @@ async function installMocks(page) {
       seen.images.push(req.postDataJSON());
       return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "application/json" }, body: JSON.stringify({ data: [{ b64_json: PNG_1PX }] }) });
     }
+    if (url.pathname === "/v1/videos" && req.method() === "POST") {
+      seen.sora.push(req.postData() ?? "");
+      return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "application/json" }, body: JSON.stringify({ id: "vid_1", status: "in_progress", progress: 50 }) });
+    }
+    if (url.pathname === "/v1/videos/vid_1") return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "application/json" }, body: JSON.stringify({ id: "vid_1", status: "completed" }) });
+    if (url.pathname === "/v1/videos/vid_1/content") return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "video/mp4" }, body: Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]) });
     seen.openai.push(req.postDataJSON());
     return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "text/event-stream" }, body: openaiStream("Reply from the OpenAI mock.") });
   });
+
+  await page.route("https://api.x.ai/**", async (route) => {
+    const req = route.request();
+    if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: CORS });
+    const url = new URL(req.url());
+    const json = (o) => route.fulfill({ status: 200, headers: { ...CORS, "content-type": "application/json" }, body: JSON.stringify(o) });
+    if (url.pathname === "/v1/models") return json({ data: [{ id: "grok-4" }, { id: "grok-imagine-image" }, { id: "grok-imagine-video" }] });
+    if (url.pathname === "/v1/images/generations" || url.pathname === "/v1/images/edits") {
+      seen.xai.push({ path: url.pathname, body: req.postDataJSON() });
+      return json({ data: [{ b64_json: PNG_1PX }] });
+    }
+    if (url.pathname === "/v1/videos/generations") {
+      seen.xai.push({ path: url.pathname, body: req.postDataJSON() });
+      return json({ request_id: "req_9" });
+    }
+    if (url.pathname === "/v1/videos/req_9") return json({ status: "done", video: { url: "https://vidgen.x.ai/clip.mp4", duration: 6 } });
+    return json({});
+  });
+  await page.route("https://vidgen.x.ai/**", (route) => route.fulfill({ status: 200, headers: { ...CORS, "content-type": "video/mp4" }, body: Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]) }));
 
   await page.route("https://news.example.org/**", (route) =>
     route.fulfill({ status: 200, headers: { ...CORS, "content-type": "text/html" }, body: "<html><body><h1>Today</h1><script>x()</script><p>Sunny &amp; calm.</p></body></html>" }),
@@ -315,6 +340,7 @@ async function main() {
     check("image generated through the OpenAI images endpoint", seen.images.length === 1 && seen.images[0].model === "gpt-image-1" && seen.images[0].size === "1536x1024" && /lighthouse/.test(seen.images[0].prompt));
     check("generated image displayed inline", (await page.locator("img.media").count()) === 1);
 
+
     await page.locator('button[title="Model parameters"]').click();
     await page.getByRole("tab", { name: "All chats" }).click();
     const tempRow = page.locator(".param", { hasText: "Temperature" });
@@ -425,6 +451,50 @@ async function main() {
     await idle(page);
     check("regenerate keeps message count stable", (await page.locator(".msg").count()) === nBefore, `${await page.locator(".msg").count()} vs ${nBefore}`);
 
+    console.log("Grok Imagine: image mode, edit, animate");
+    await openSettings(page, "Providers & keys");
+    const xaiCard = page.locator(".card", { hasText: "xAI (Grok)" }).first();
+    await xaiCard.locator('input[type="password"]').fill("xai-test");
+    await xaiCard.getByRole("button", { name: "Save" }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll(".toast.ok")].some((t) => /xAI \(Grok\): 3 models/.test(t.textContent)));
+    await closeSettings(page);
+    await page.getByRole("button", { name: "New chat" }).click().catch(async () => {
+      await page.locator('button[title="Show chats"]').click();
+      await page.getByRole("button", { name: "New chat" }).click();
+    });
+    await page.locator(".model-btn").click();
+    await page.getByRole("tab", { name: "Image" }).click();
+    check("picker lists Grok Imagine as an image model", (await page.getByRole("option", { name: /grok-imagine-image/ }).count()) === 1);
+    await page.getByRole("option", { name: /grok-imagine-image/ }).click();
+    check("composer switched to Image mode", (await page.locator('.mode-seg [aria-checked="true"]').textContent()) === "Image");
+    await page.locator('select[aria-label="Aspect ratio"]').selectOption("16:9");
+    await page.locator('select[aria-label="Number of images"]').selectOption("2");
+    await sendMessage(page, "a red fox in snow");
+    await page.waitForSelector(".msg.assistant img.media");
+    await idle(page);
+    check("Grok image request carried prompt, count and aspect", seen.xai[0]?.path === "/v1/images/generations" && seen.xai[0].body.model === "grok-imagine-image" && seen.xai[0].body.n === 2 && seen.xai[0].body.aspect_ratio === "16:9" && seen.xai[0].body.prompt === "a red fox in snow", JSON.stringify(seen.xai[0]));
+    check("generated pictures shown in the chat", (await page.locator(".msg.assistant img.media").count()) === 1);
+    await page.locator(".msg.assistant").last().getByRole("button", { name: "Edit" }).first().click();
+    await page.waitForFunction(() => document.querySelectorAll(".composer .chip").length === 1);
+    await sendMessage(page, "make it night");
+    await page.waitForFunction(() => document.querySelectorAll(".msg.assistant").length === 2);
+    await idle(page);
+    check("edit sent the picture to Grok's edits endpoint", seen.xai[1]?.path === "/v1/images/edits" && /^data:image\/png;base64,/.test(seen.xai[1].body.image?.url ?? ""), JSON.stringify(seen.xai[1]?.path));
+    await page.locator(".model-btn").click();
+    await page.getByRole("tab", { name: "Video" }).click();
+    await page.getByRole("option", { name: /grok-imagine-video/ }).click();
+    await page.locator(".msg.assistant").last().getByRole("button", { name: "Animate" }).first().click();
+    await page.waitForFunction(() => document.querySelectorAll(".composer .chip").length === 1);
+    check("Animate switched to Video mode", (await page.locator('.mode-seg [aria-checked="true"]').textContent()) === "Video");
+    await sendMessage(page, "the fox runs away");
+    await page.waitForSelector(".msg.assistant video.media", { timeout: 30000 });
+    await idle(page);
+    const vid = seen.xai.find((x) => x.path === "/v1/videos/generations");
+    check("image-to-video request sent to Grok with the start image", !!vid && vid.body.model === "grok-imagine-video" && /^data:image\/png;base64,/.test(vid.body.image?.url ?? ""), JSON.stringify(vid?.body ?? {}).slice(0, 200));
+    await page.locator('.mode-seg button', { hasText: "Chat" }).click();
+    await page.waitForFunction(() => document.querySelector('.mode-seg [aria-checked="true"]')?.textContent === "Chat").catch(() => {});
+    check("Chat button returns to a chat model", /Claude|gpt|grok-4/i.test(await page.locator(".model-btn").textContent()), await page.locator(".model-btn").textContent());
+    await shot(page, "05b-grok-media");
     console.log("dark theme + phone and tablet layouts");
     await openSettings(page, "General");
     await page.locator("label.field", { hasText: "Appearance" }).locator("select").selectOption("dark");

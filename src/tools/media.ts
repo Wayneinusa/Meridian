@@ -1,6 +1,74 @@
-import { generateImages, generateVideo } from "../providers/media";
+import { generateImages, generateVideo, pickDefaultMedia, type MediaInput } from "../providers/media";
 import { findModel } from "../providers/registry";
-import type { Tool } from "./types";
+import type { BlobRef, MediaOptions, ModelRef, Settings } from "../types";
+import type { Tool, ToolContext } from "./types";
+
+/** The media model to use: the one chosen in Settings, else the best one available. */
+export function mediaModelFor(settings: Settings, kind: "image" | "video"): ModelRef | undefined {
+  const chosen = kind === "image" ? settings.imageModel : settings.videoModel;
+  if (chosen && findModel(settings, chosen)) return chosen;
+  return pickDefaultMedia(settings.providers, kind);
+}
+
+export function noMediaModelMessage(kind: "image" | "video"): string {
+  return kind === "image"
+    ? "No image model is available. Add an API key for OpenAI, Google Gemini, xAI (Grok) or OpenRouter in Settings → Providers & keys; the app then picks an image model automatically (or choose one in Settings → Models)."
+    : "No video model is available. Add an API key for OpenAI (Sora), Google Gemini (Veo) or xAI (Grok Imagine) in Settings → Providers & keys; the app then picks a video model automatically (or choose one in Settings → Models).";
+}
+
+export interface CreateMediaArgs {
+  kind: "image" | "video";
+  prompt: string;
+  options?: MediaOptions;
+  inputs?: BlobRef[];
+  model?: ModelRef;
+}
+
+/** Shared by the tools below and by chats whose selected model is itself an image or video model. */
+export async function createMedia(
+  args: CreateMediaArgs,
+  ctx: Pick<ToolContext, "settings" | "getKey" | "loadBlob" | "saveBlob" | "signal" | "progress">,
+): Promise<{ refs: BlobRef[]; modelName: string }> {
+  const modelRef = args.model ?? mediaModelFor(ctx.settings, args.kind);
+  const found = findModel(ctx.settings, modelRef);
+  if (!found) throw new Error(noMediaModelMessage(args.kind));
+  const apiKey = await ctx.getKey(found.provider.id);
+  const inputs: MediaInput[] = [];
+  for (const b of args.inputs ?? []) {
+    if (!b.mime.startsWith("image/")) continue;
+    const bytes = await ctx.loadBlob(b.blobId);
+    if (bytes) inputs.push({ bytes, mime: b.mime, name: b.name });
+  }
+  const stamp = Date.now().toString(36);
+  if (args.kind === "image") {
+    ctx.progress(inputs.length ? "editing image" : "creating image");
+    const images = await generateImages({ provider: found.provider, apiKey, model: found.model, prompt: args.prompt, options: args.options, inputs, signal: ctx.signal, onProgress: ctx.progress });
+    const refs: BlobRef[] = [];
+    for (let i = 0; i < images.length; i++) {
+      const ext = images[i].mime.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+      refs.push(await ctx.saveBlob(images[i].bytes, images[i].mime, `image-${stamp}${images.length > 1 ? `-${i + 1}` : ""}.${ext}`));
+    }
+    return { refs, modelName: found.model.name };
+  }
+  ctx.progress(inputs.length ? "animating image" : "starting video");
+  const video = await generateVideo({ provider: found.provider, apiKey, model: found.model, prompt: args.prompt, options: args.options, inputs: inputs.slice(0, 1), signal: ctx.signal, onProgress: (n) => ctx.progress(`video ${n}`) });
+  const ext = video.mime.includes("webm") ? "webm" : video.mime.includes("quicktime") ? "mov" : "mp4";
+  const saved = await ctx.saveBlob(video.bytes, video.mime.startsWith("video/") ? video.mime : "video/mp4", `video-${stamp}.${ext}`);
+  return { refs: [saved], modelName: found.model.name };
+}
+
+function inputsFromNames(names: unknown, ctx: ToolContext): BlobRef[] {
+  if (!Array.isArray(names)) return [];
+  const files = ctx.files();
+  const out: BlobRef[] = [];
+  for (const n of names) {
+    const hit = [...files].reverse().find((f) => f.name === n) ?? [...files].reverse().find((f) => f.name.toLowerCase() === String(n).toLowerCase());
+    if (hit) out.push(hit);
+  }
+  return out;
+}
+
+const ASPECTS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"];
 
 const generateImage: Tool = {
   group: "media",
@@ -8,14 +76,16 @@ const generateImage: Tool = {
   spec: {
     name: "generate_image",
     description:
-      "Generate one or more images from a text prompt with the image model the user configured. " +
-      "Write a detailed, self-contained prompt (subject, style, composition, lighting). The images are shown to the user directly.",
+      "Create images from a text prompt, or edit existing images, with the user's image model. Write a detailed, self-contained prompt " +
+      "(subject, style, composition, lighting, text to render). To edit or combine pictures, pass the file names of images attached or created earlier in this chat in input_images. " +
+      "The images are shown to the user directly; do not describe them back in full.",
     inputSchema: {
       type: "object",
       properties: {
-        prompt: { type: "string", description: "Detailed description of the image" },
-        shape: { type: "string", enum: ["square", "landscape", "portrait"], description: "Default square" },
+        prompt: { type: "string", description: "Detailed description of the image, or of the change to make" },
+        aspect_ratio: { type: "string", enum: ASPECTS, description: "Default 1:1" },
         count: { type: "integer", description: "How many images, 1-4. Default 1." },
+        input_images: { type: "array", items: { type: "string" }, description: "File names of images in this chat to edit or use as references" },
       },
       required: ["prompt"],
     },
@@ -23,29 +93,13 @@ const generateImage: Tool = {
   needsApproval: () => false,
   summarize: (i) => `Generate image: ${String(i.prompt).slice(0, 80)}`,
   async run(input, ctx) {
-    const found = findModel(ctx.settings, ctx.settings.imageModel);
-    if (!found) {
-      return { isError: true, text: "No image model is configured. Tell the user to choose one in Settings → Models → Image generation." };
-    }
-    const apiKey = await ctx.getKey(found.provider.id);
-    const images = await generateImages({
-      provider: found.provider,
-      apiKey,
-      model: found.model,
-      prompt: String(input.prompt),
-      shape: input.shape as string | undefined,
-      count: typeof input.count === "number" ? input.count : 1,
-      signal: ctx.signal,
-    });
-    const refs = [];
-    for (let i = 0; i < images.length; i++) {
-      const ext = images[i].mime.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
-      refs.push(await ctx.saveBlob(images[i].bytes, images[i].mime, `image-${Date.now().toString(36)}${images.length > 1 ? `-${i + 1}` : ""}.${ext}`));
-    }
-    return {
-      text: `Generated ${refs.length} image(s) with ${found.model.name}. They are displayed to the user under this message.`,
-      artifacts: refs,
-    };
+    if (!mediaModelFor(ctx.settings, "image")) return { isError: true, text: noMediaModelMessage("image") };
+    const inputs = inputsFromNames(input.input_images, ctx);
+    const { refs, modelName } = await createMedia(
+      { kind: "image", prompt: String(input.prompt), inputs, options: { aspect: input.aspect_ratio as MediaOptions["aspect"], count: typeof input.count === "number" ? input.count : 1 } },
+      ctx,
+    );
+    return { text: `Generated ${refs.length} image(s) with ${modelName}: ${refs.map((r) => r.name).join(", ")}. They are displayed to the user under this message.`, artifacts: refs };
   },
 };
 
@@ -55,14 +109,15 @@ const generateVideoTool: Tool = {
   spec: {
     name: "generate_video",
     description:
-      "Generate a short video clip from a text prompt with the video model the user configured. This takes several minutes and costs noticeably more than text; " +
-      "only call it when the user asked for a video. Describe the scene, motion, camera and style in the prompt.",
+      "Create a short video clip from a text prompt with the user's video model, optionally starting from an image in this chat (image-to-video). " +
+      "It takes minutes and costs much more than text, so only call it when the user asked for a video. Describe scene, motion, camera, sound and style.",
     inputSchema: {
       type: "object",
       properties: {
         prompt: { type: "string", description: "Detailed description of the clip" },
-        shape: { type: "string", enum: ["landscape", "portrait"], description: "Default landscape" },
-        seconds: { type: "integer", description: "Clip length in seconds, if the model allows choosing (typically 4-12)" },
+        aspect_ratio: { type: "string", enum: ["16:9", "9:16", "1:1"], description: "Default 16:9" },
+        seconds: { type: "integer", description: "Length in seconds if the model allows choosing (typically 4-15)" },
+        start_image: { type: "string", description: "File name of an image in this chat to animate" },
       },
       required: ["prompt"],
     },
@@ -70,25 +125,13 @@ const generateVideoTool: Tool = {
   needsApproval: () => false,
   summarize: (i) => `Generate video: ${String(i.prompt).slice(0, 80)}`,
   async run(input, ctx) {
-    const found = findModel(ctx.settings, ctx.settings.videoModel);
-    if (!found) {
-      return { isError: true, text: "No video model is configured. Tell the user to choose one in Settings → Models → Video generation." };
-    }
-    const apiKey = await ctx.getKey(found.provider.id);
-    ctx.progress("starting");
-    const video = await generateVideo({
-      provider: found.provider,
-      apiKey,
-      model: found.model,
-      prompt: String(input.prompt),
-      shape: input.shape as string | undefined,
-      seconds: typeof input.seconds === "number" ? input.seconds : undefined,
-      signal: ctx.signal,
-      onProgress: ctx.progress,
-    });
-    const ext = video.mime.includes("webm") ? "webm" : "mp4";
-    const ref = await ctx.saveBlob(video.bytes, video.mime.startsWith("video/") ? video.mime : "video/mp4", `video-${Date.now().toString(36)}.${ext}`);
-    return { text: `Generated a video with ${found.model.name}. It is displayed to the user under this message.`, artifacts: [ref] };
+    if (!mediaModelFor(ctx.settings, "video")) return { isError: true, text: noMediaModelMessage("video") };
+    const inputs = inputsFromNames(input.start_image ? [input.start_image] : [], ctx);
+    const { refs, modelName } = await createMedia(
+      { kind: "video", prompt: String(input.prompt), inputs, options: { aspect: input.aspect_ratio as MediaOptions["aspect"], seconds: typeof input.seconds === "number" ? input.seconds : undefined } },
+      ctx,
+    );
+    return { text: `Generated a video with ${modelName} (${refs[0].name}). It is displayed to the user under this message.`, artifacts: refs };
   },
 };
 

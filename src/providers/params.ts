@@ -52,6 +52,10 @@ const SUPPORT: Record<ProviderKind, ParamKey[]> = {
     "temperature", "topP", "frequencyPenalty", "presencePenalty", "seed", "maxTokens", "stop", "verbosity", "contextMessages",
     "effort", "toolChoice", "parallelToolCalls", "responseFormat", "serviceTier", "logitBias", "extraBody",
   ],
+  xai: [
+    "temperature", "topP", "frequencyPenalty", "presencePenalty", "seed", "maxTokens", "stop", "contextMessages",
+    "effort", "toolChoice", "parallelToolCalls", "responseFormat", "logitBias", "extraBody",
+  ],
   "openai-compatible": [
     "temperature", "topP", "topK", "minP", "frequencyPenalty", "presencePenalty", "repetitionPenalty", "seed", "maxTokens", "stop",
     "contextMessages", "effort", "toolChoice", "parallelToolCalls", "responseFormat", "logitBias", "extraBody",

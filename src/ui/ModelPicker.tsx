@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ModelKind } from "../types";
 import { currentModelRef, setChatModel, useApp } from "../state/store";
 import { findModel } from "../providers/registry";
 import type { ModelInfo } from "../types";
@@ -19,11 +20,16 @@ export function ModelPicker() {
   const active = useApp((s) => s.active);
   // re-read on every store change so a choice made before the chat exists shows up
   useApp((s) => s.metas);
+  useApp((s) => s.draft);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const wrap = useRef<HTMLDivElement>(null);
   const ref = currentModelRef(active);
   const current = findModel(settings, ref);
+  const [tab, setTab] = useState<ModelKind>(current?.model.kind ?? "chat");
+  useEffect(() => {
+    if (open) setTab(current?.model.kind ?? "chat");
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -40,10 +46,12 @@ export function ModelPicker() {
       .filter((p) => p.enabled)
       .map((p) => ({
         provider: p,
-        models: p.models.filter((m) => m.kind === "chat" && (!q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q))),
+        models: p.models.filter(
+          (m) => (m.kind === tab || (tab === "image" && m.kind === "chat" && m.caps.imageOutput)) && (!q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)),
+        ),
       }))
       .filter((g) => g.models.length);
-  }, [settings.providers, query]);
+  }, [settings.providers, query, tab]);
 
   return (
     <div className="pop-anchor" ref={wrap}>
@@ -53,10 +61,21 @@ export function ModelPicker() {
       </button>
       {open && (
         <div className="popover" style={{ right: 0, top: 42, width: 340 }} role="listbox">
+          <div className="seg" role="tablist" style={{ marginBottom: 6 }}>
+            {(["chat", "image", "video"] as const).map((k) => (
+              <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "sel" : ""} onClick={() => setTab(k)}>
+                {k === "chat" ? "Chat" : k === "image" ? "Image" : "Video"}
+              </button>
+            ))}
+          </div>
           <input type="search" placeholder="Search models" value={query} onChange={(e) => setQuery(e.target.value)} autoFocus aria-label="Search models" />
           {groups.length === 0 && (
             <div className="hint" style={{ padding: 10 }}>
-              No models yet. Add an API key in Settings → Providers and the model list is fetched for you.
+              {tab === "chat"
+                ? "No models yet. Add an API key in Settings → Providers & keys and the model list is fetched for you."
+                : tab === "image"
+                  ? "No image models yet. Add a key for OpenAI, Google Gemini, xAI (Grok) or OpenRouter in Settings → Providers & keys."
+                  : "No video models yet. Add a key for OpenAI (Sora), Google Gemini (Veo) or xAI (Grok Imagine) in Settings → Providers & keys."}
             </div>
           )}
           {groups.map((g) => (

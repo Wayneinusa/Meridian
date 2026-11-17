@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 import { openWithSystem, saveFile } from "../platform/files";
 import { findModel } from "../providers/registry";
-import { editAndResend, loadBlob, regenerate, toast, useApp } from "../state/store";
+import { attachToComposer, editAndResend, loadBlob, regenerate, setChatMode, toast, useApp } from "../state/store";
 import type { BlobRef, Message, Part } from "../types";
 import { extOf, formatBytes } from "../util/bytes";
 import { Icon } from "./icons";
@@ -113,6 +113,28 @@ function MediaView({ file }: { file: BlobRef }) {
         <button className="btn small" onClick={() => void saveBlob(file)}>
           <Icon.download /> Save
         </button>
+        {file.mime.startsWith("image/") && (
+          <>
+            <button
+              className="btn small"
+              title="Change this picture with a prompt"
+              onClick={async () => {
+                if (await setChatMode("image")) attachToComposer([file]);
+              }}
+            >
+              <Icon.edit /> Edit
+            </button>
+            <button
+              className="btn small"
+              title="Turn this picture into a video"
+              onClick={async () => {
+                if (await setChatMode("video")) attachToComposer([file]);
+              }}
+            >
+              Animate
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

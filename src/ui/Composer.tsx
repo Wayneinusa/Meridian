@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { platform } from "../platform";
 import { findModel } from "../providers/registry";
-import { attachFile, currentModelRef, send, stop, toast, updateSettings, useApp } from "../state/store";
-import type { Part, Settings } from "../types";
+import { attachFile, currentModelRef, send, setChatMedia, setChatMode, stop, toast, updateSettings, useApp } from "../state/store";
+import type { MediaOptions, Part, Settings } from "../types";
 import { Icon } from "./icons";
 import { useBlobUrl } from "./useBlobUrl";
 
@@ -43,6 +43,13 @@ export function Composer() {
   const fileInput = useRef<HTMLInputElement>(null);
   const toolsWrap = useRef<HTMLDivElement>(null);
   const found = findModel(settings, currentModelRef(active));
+  const mode = found?.model.kind ?? "chat";
+  const draftState = useApp((s) => s.draft);
+  const media: MediaOptions = (active ? active.media : draftState.media) ?? {};
+  const inbox = useApp((s) => s.composerInbox);
+  useEffect(() => {
+    if (inbox.seq) setAttachments((a) => [...a, ...inbox.parts.filter((p) => !a.some((x) => x.blobId === p.blobId))]);
+  }, [inbox.seq]);
 
   useEffect(() => {
     setText("");
@@ -134,7 +141,19 @@ export function Composer() {
         <textarea
           ref={area}
           rows={1}
-          placeholder={found ? `Message ${found.model.name}` : "Add an API key in Settings to start"}
+          placeholder={
+            !found
+              ? "Add an API key in Settings to start"
+              : mode === "image"
+                ? attachments.some((a) => a.mime.startsWith("image/"))
+                  ? `Describe the change to make (${found.model.name})`
+                  : `Describe the image to create (${found.model.name})`
+                : mode === "video"
+                  ? attachments.some((a) => a.mime.startsWith("image/"))
+                    ? `Describe how the image should move (${found.model.name})`
+                    : `Describe the video to create (${found.model.name})`
+                  : `Message ${found.model.name}`
+          }
           value={text}
           aria-label="Message"
           onChange={(e) => setText(e.target.value)}
@@ -203,6 +222,45 @@ export function Composer() {
               </div>
             )}
           </div>
+          <div className="seg mode-seg" role="radiogroup" aria-label="What to create">
+            {(["chat", "image", "video"] as const).map((m) => (
+              <button key={m} role="radio" aria-checked={mode === m} className={mode === m ? "sel" : ""} disabled={busy} onClick={() => void setChatMode(m)}>
+                {m === "chat" ? "Chat" : m === "image" ? "Image" : "Video"}
+              </button>
+            ))}
+          </div>
+          {mode !== "chat" && (
+            <div className="media-opts">
+              <select aria-label="Aspect ratio" value={media.aspect ?? ""} onChange={(e) => void setChatMedia({ ...media, aspect: (e.target.value || undefined) as MediaOptions["aspect"] })}>
+                <option value="">{mode === "video" ? "16:9" : "1:1"}</option>
+                {(mode === "video" ? ["16:9", "9:16", "1:1"] : ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]).map((a) => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
+              {mode === "image" ? (
+                <select aria-label="Number of images" value={String(media.count ?? 1)} onChange={(e) => void setChatMedia({ ...media, count: Number(e.target.value) })}>
+                  {[1, 2, 3, 4].map((n) => (
+                    <option key={n} value={n}>{n} image{n > 1 ? "s" : ""}</option>
+                  ))}
+                </select>
+              ) : (
+                <>
+                  <select aria-label="Length" value={String(media.seconds ?? "")} onChange={(e) => void setChatMedia({ ...media, seconds: e.target.value ? Number(e.target.value) : undefined })}>
+                    <option value="">Default length</option>
+                    {[4, 5, 6, 8, 10, 12, 15].map((n) => (
+                      <option key={n} value={n}>{n} s</option>
+                    ))}
+                  </select>
+                  <select aria-label="Resolution" value={media.resolution ?? ""} onChange={(e) => void setChatMedia({ ...media, resolution: e.target.value || undefined })}>
+                    <option value="">Default quality</option>
+                    {["480p", "720p", "1080p"].map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </>
+              )}
+            </div>
+          )}
           <span className="grow" />
           {busy ? (
             <button className="send stop" title="Stop" onClick={() => stop()}>
