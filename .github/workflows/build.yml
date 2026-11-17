@@ -112,6 +112,12 @@ jobs:
           cp "$ipa" Meridian-unsigned.ipa
           ls -la Meridian-unsigned.ipa | tee ipa.txt
           unzip -l Meridian-unsigned.ipa | head -n 40 | tee -a ipa.txt
+          echo "--- Info.plist" | tee -a ipa.txt
+          unzip -q -o Meridian-unsigned.ipa 'Payload/*/Info.plist' -d ipa-check
+          plutil -p ipa-check/Payload/*/Info.plist | tee -a ipa.txt
+          echo "--- binary" | tee -a ipa.txt
+          unzip -q -o Meridian-unsigned.ipa -d ipa-check
+          lipo -info ipa-check/Payload/*.app/Meridian | tee -a ipa.txt
 
       - name: Upload the app
         uses: actions/upload-artifact@v4

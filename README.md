@@ -25,10 +25,10 @@ Built and tested in a Linux container without a Mac, a Windows machine or any pr
 - `npm run e2e`: 54 checks driving the web UI in Chromium with provider APIs mocked at the network layer. Chat, streaming, thinking replay, file creation and download, attachments, approval prompts, image generation, parameters, provider switching mid-chat, an MCP connector, backup export/import, persistence, phone and tablet layouts.
 - `e2e/native.cjs`: 25 checks driving the **real desktop app** (Linux build, WebKit) through WebDriver against a local mock model server. Native HTTP with true incremental streaming, shell commands and file writes behind approval, secret storage, all four document writers under the app's content-security policy, the on-disk store, and two-way folder sync including a merge of diverged copies.
 
-**Built, but not run**
+**Built on GitHub, but not run on a device**
 
-- The **Windows installer** (`Meridian_0.1.0_x64-setup.exe`) was cross-built from Linux with the MinGW toolchain. The executable imports only Windows system DLLs plus the WebView2 loader it ships with, and the installer contains both. It has not been launched on Windows, and it is unsigned, so SmartScreen will warn on first run. The same code passes its native tests in the Linux build; the Windows-specific parts (Credential Manager, PowerShell, screenshots, input control) compile but are unexercised. For a signed, MSVC-built release use the GitHub workflow below.
-- The **iOS-only code** (iCloud container lookup, Keychain) type-checks for `aarch64-apple-ios`. The iOS app itself is compiled by the GitHub workflow on a Mac runner; it has not been run on a device.
+- The **iPhone/iPad app**: the Build workflow compiles it on a Mac runner (Xcode 26) and produces an unsigned `.ipa`. It has not been installed on a device, so nothing iOS-specific (Keychain, the Files app, file pickers, iCloud) has been exercised.
+- The **Windows installer**: the same workflow builds it on a Windows runner. It has not been launched on Windows, and it is unsigned, so SmartScreen will warn on first run. The same code passes its native tests in the Linux build; the Windows-specific parts (Credential Manager, PowerShell, screenshots, input control) are unexercised.
 
 **Not verified at all**
 
