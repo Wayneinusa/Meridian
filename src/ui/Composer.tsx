@@ -5,6 +5,8 @@ import { findModel } from "../providers/registry";
 import { attachFile, currentModelRef, getKey, send, setChatMedia, setChatMode, stop, toast, updateSettings, useApp } from "../state/store";
 import type { MediaOptions, ModelRef, Part, Settings } from "../types";
 import { record, speak, stopSpeaking, transcribe, type Recording } from "../voice";
+import { BackendPicker } from "./BackendPicker";
+import { modelLabel } from "../providers/backends";
 import { Icon } from "./icons";
 import { VariablesDialog, variablesOf } from "./pages/Prompts";
 import { useBlobUrl } from "./useBlobUrl";
@@ -314,12 +316,12 @@ export function Composer() {
               ? "Add an API key in Settings to start"
               : mode === "image"
                 ? attachments.some((a) => a.mime.startsWith("image/"))
-                  ? `Describe the change to make (${found.model.name})`
-                  : `Describe the image to create (${found.model.name})`
+                  ? `Describe the change to make (${modelLabel(found.provider, found.model)})`
+                  : `Describe the image to create (${modelLabel(found.provider, found.model)})`
                 : mode === "video"
                   ? attachments.some((a) => a.mime.startsWith("image/"))
-                    ? `Describe how the image should move (${found.model.name})`
-                    : `Describe the video to create (${found.model.name})`
+                    ? `Describe how the image should move (${modelLabel(found.provider, found.model)})`
+                    : `Describe the video to create (${modelLabel(found.provider, found.model)})`
                   : `Message ${found.model.name}  ·  / for prompts`
           }
           value={text}
@@ -417,6 +419,7 @@ export function Composer() {
           </div>
           {mode !== "chat" && (
             <div className="media-opts">
+              <BackendPicker kind={mode} />
               <select aria-label="Aspect ratio" value={media.aspect ?? ""} onChange={(e) => void setChatMedia({ ...media, aspect: (e.target.value || undefined) as MediaOptions["aspect"] })}>
                 <option value="">{mode === "video" ? "16:9" : "1:1"}</option>
                 {(mode === "video" ? ["16:9", "9:16", "1:1"] : ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]).map((a) => (

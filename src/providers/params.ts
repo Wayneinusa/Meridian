@@ -64,6 +64,14 @@ const SUPPORT: Record<ProviderKind, ParamKey[]> = {
     "temperature", "topP", "topK", "frequencyPenalty", "presencePenalty", "seed", "maxTokens", "stop", "contextMessages",
     "thinkingBudget", "toolChoice", "responseFormat", "extraBody",
   ],
+  // image / video services: no chat parameters
+  pollinations: [],
+  horde: [],
+  cloudflare: [],
+  fal: [],
+  runway: [],
+  "custom-media": [],
+  plugin: [],
 };
 
 /** Why a parameter is not used with this model, or null when it is. */

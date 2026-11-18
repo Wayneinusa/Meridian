@@ -1,11 +1,13 @@
 // Reading plugins from the formats people actually share:
 //  - Claude plugins (and marketplaces): .claude-plugin/plugin.json with
 //    commands/*.md, skills/<name>/SKILL.md, agents/*.md and .mcp.json
-//  - TypingMind plugins: JSON with openaiSpec and javascript / http implementation
+//  - TypingMind plugins: JSON with openaiSpec and javascript / http implementation,
+//    including multi-function ones (pluginFunctions / functions arrays)
 //  - Meridian plugin JSON (the Plugin type, minus ids)
 import { unzipSync } from "fflate";
 import { httpFetch, readError } from "../platform/http";
-import type { McpServerConfig, Plugin, PluginAgentDef, PluginCommand, PluginSettingDef, PluginSkill, PluginTool } from "../types";
+import type { McpServerConfig, Plugin, PluginAgentDef, PluginCommand, PluginEngine, PluginSettingDef, PluginSkill, PluginTool } from "../types";
+import { suggestEngines } from "./engines";
 import { uid } from "../types";
 import { utf8 } from "../util/bytes";
 
@@ -153,56 +155,168 @@ export function pluginsFromZip(bytes: Uint8Array, nameHint = "plugin"): PluginDr
 }
 
 /** TypingMind plugin JSON. */
-export function fromTypingMind(j: Record<string, unknown>): PluginDraft | null {
-  const spec = j.openaiSpec as { name?: string; description?: string; parameters?: Record<string, unknown> } | undefined;
+interface FnSpec {
+  name?: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+interface TmFunction {
+  openaiSpec?: FnSpec;
+  spec?: FnSpec;
+  function?: FnSpec;
+  name?: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+  implementationType?: string;
+  code?: string;
+  httpAction?: TmHttpAction;
+  outputType?: string;
+}
+
+interface TmHttpAction {
+  url: string;
+  method?: string;
+  requestHeaders?: string | Record<string, string>;
+  requestBody?: string | Record<string, unknown>;
+  hasHeaders?: boolean;
+  hasBody?: boolean;
+  resultPath?: string;
+}
+
+/** The OpenAI function spec of an entry, in any of the shapes people use. */
+function specOf(f: TmFunction): FnSpec | null {
+  const s = f.openaiSpec ?? f.spec ?? f.function ?? (f.name ? { name: f.name, description: f.description, parameters: f.parameters } : null);
+  return s?.name ? s : null;
+}
+
+const IDENT = /^[A-Za-z_$][\w$]*$/;
+
+/** Names of the functions a TypingMind code block defines. */
+function definedFunctions(code: string): string[] {
+  const out = new Set<string>();
+  for (const m of code.matchAll(/(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g)) out.add(m[1]);
+  for (const m of code.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/g)) out.add(m[1]);
+  return [...out];
+}
+
+/**
+ * TypingMind code defines a function named after the tool and is called with
+ * (params, userSettings). Shared code may define several functions, or one
+ * with another name: call the right one.
+ */
+export function wrapTypingMindCode(code: string, name: string): string {
+  const defined = definedFunctions(code);
+  if (!defined.length) return code; // a bare body: it already returns its result
+  if (defined.includes(name)) return `${code}\nreturn await ${name}(args, settings);`;
+  if (defined.length === 1) return `${code}\nreturn await ${defined[0]}(args, settings);`;
+  // several functions and none we recognised by name: prefer the tool's name if the code defines it some other way
+  const pickFn = IDENT.test(name) ? `(typeof ${name} === "function" ? ${name} : ${defined[0]})` : defined[0];
+  return `${code}\nreturn await ${pickFn}(args, settings);`;
+}
+
+/** TypingMind HTTP actions use {param} and {userSettings.key}; ours are {{param}} and {{settings.key}}. */
+export function convertPlaceholders(text: string, params: string[], settingKeys: string[]): string {
+  return text.replace(/(\{)?\{\s*([\w.]+)\s*\}(\})?/g, (m, open: string | undefined, key: string, close: string | undefined) => {
+    if (open && close) return m.replace(/\{\{\s*userSettings\./, "{{settings."); // already {{x}}
+    const bare = key.replace(/^(userSettings|settings|params|parameters|args)\./, "");
+    if (/^(userSettings|settings)\./.test(key) || (settingKeys.includes(bare) && !params.includes(bare))) return `${open ?? ""}{{settings.${bare}}}${close ?? ""}`;
+    if (params.includes(bare)) return `${open ?? ""}{{${bare}}}${close ?? ""}`;
+    return m;
+  });
+}
+
+function toolFrom(f: TmFunction, shared: Record<string, unknown>, settingKeys: string[]): PluginTool | null {
+  const spec = specOf(f);
   if (!spec?.name) return null;
-  const draft = emptyDraft(String(j.title ?? spec.name), "file");
-  draft.description = String(j.overviewMarkdown ?? spec.description ?? "").slice(0, 2000);
-  draft.emoji = typeof j.emoji === "string" ? j.emoji : undefined;
-  for (const s of (j.userSettings ?? []) as { name: string; label?: string; type?: string; required?: boolean; description?: string }[]) {
-    draft.settings.push({ key: s.name, label: s.label ?? s.name, secret: s.type === "password", required: !!s.required, help: s.description } satisfies PluginSettingDef);
-  }
-  const tool: PluginTool = { name: spec.name, description: spec.description ?? "", inputSchema: spec.parameters ?? { type: "object", properties: {} }, kind: "js" };
-  if (j.implementationType === "http" && j.httpAction) {
-    const h = j.httpAction as { url: string; method?: string; requestHeaders?: string; requestBody?: string; hasHeaders?: boolean; hasBody?: boolean; resultTransform?: unknown };
+  const params = Object.keys(((spec.parameters ?? {}) as { properties?: Record<string, unknown> }).properties ?? {});
+  const tool: PluginTool = {
+    name: spec.name,
+    description: spec.description ?? "",
+    inputSchema: spec.parameters ?? { type: "object", properties: {} },
+    kind: "js",
+    outputType: f.outputType ?? (shared.outputType as string | undefined),
+  };
+  const impl = f.implementationType ?? (shared.implementationType as string | undefined);
+  const http = f.httpAction ?? (impl === "http" ? (shared.httpAction as TmHttpAction | undefined) : undefined);
+  const code = f.code ?? (shared.code as string | undefined);
+  if ((impl === "http" || !code) && http?.url) {
     let headers: Record<string, string> = {};
-    if (h.hasHeaders && h.requestHeaders) {
+    const rawHeaders = http.requestHeaders;
+    if (rawHeaders && http.hasHeaders !== false) {
       try {
-        headers = JSON.parse(h.requestHeaders);
+        headers = typeof rawHeaders === "string" ? JSON.parse(convertPlaceholders(rawHeaders, params, settingKeys)) : rawHeaders;
       } catch {
-        /* ignore */
+        /* unreadable headers: leave them out */
       }
     }
+    for (const k of Object.keys(headers)) headers[k] = convertPlaceholders(String(headers[k]), params, settingKeys);
+    const rawBody = http.requestBody;
+    const body = rawBody && http.hasBody !== false ? convertPlaceholders(typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody), params, settingKeys) : undefined;
     tool.kind = "http";
-    tool.http = { method: (h.method ?? "GET").toUpperCase() as "GET", url: h.url, headers, body: h.hasBody ? h.requestBody : undefined };
-  } else if (typeof j.code === "string") {
-    // TypingMind code defines a function named after the tool and calls it with (params, userSettings)
-    tool.code = `${j.code}\nreturn await ${spec.name}(args, settings);`;
-  } else return null;
-  draft.tools.push(tool);
+    tool.http = { method: (http.method ?? "GET").toUpperCase() as "GET", url: convertPlaceholders(http.url, params, settingKeys), headers, body, resultPath: http.resultPath };
+    return tool;
+  }
+  if (typeof code === "string" && code.trim()) {
+    tool.code = wrapTypingMindCode(code, spec.name);
+    return tool;
+  }
+  return null;
+}
+
+/**
+ * TypingMind plugins: the classic single-function export (openaiSpec + code or
+ * httpAction) and multi-function ones (pluginFunctions / functions / tools
+ * arrays sharing userSettings and, optionally, one code block).
+ */
+export function fromTypingMind(j: Record<string, unknown>): PluginDraft | null {
+  const list = (j.pluginFunctions ?? j.functions ?? (Array.isArray(j.tools) ? j.tools : undefined)) as TmFunction[] | undefined;
+  const fns: TmFunction[] = Array.isArray(list) && list.length ? list.map((x) => ((x as { type?: string; function?: FnSpec }).type === "function" && !(x as TmFunction).code ? { ...x, function: (x as { function?: FnSpec }).function } : x)) : [j as TmFunction];
+  const first = specOf(fns[0] ?? {});
+  const title = String(j.title ?? j.name ?? first?.name ?? "Plugin");
+  const draft = emptyDraft(title, "file");
+  draft.description = String(j.overviewMarkdown ?? j.description ?? first?.description ?? "").slice(0, 2000);
+  draft.emoji = typeof j.emoji === "string" ? j.emoji : undefined;
+  for (const s of (j.userSettings ?? []) as { name: string; label?: string; type?: string; required?: boolean; description?: string; defaultValue?: string; default?: string }[]) {
+    if (!s?.name) continue;
+    draft.settings.push({ key: s.name, label: s.label ?? s.name, secret: s.type === "password", required: !!s.required, help: s.description, default: s.defaultValue ?? s.default } satisfies PluginSettingDef);
+  }
+  const settingKeys = draft.settings.map((s) => s.key);
+  for (const f of fns) {
+    const t = toolFrom(f, j, settingKeys);
+    if (t) draft.tools.push(t);
+  }
+  if (!draft.tools.length) return null;
+  draft.engines = suggestEngines(draft.tools);
   return draft;
 }
+
+const isTypingMind = (j: Record<string, unknown>) =>
+  !!(j.openaiSpec || j.pluginFunctions || (Array.isArray(j.functions) && !j.skills) || (j.code && (j.spec || j.function)) || j.implementationType);
 
 export function fromJson(text: string): PluginDraft[] {
   const j = JSON.parse(text);
   if (Array.isArray(j)) return j.flatMap((x) => fromJson(JSON.stringify(x)));
-  if (j.openaiSpec) {
+  if (j && typeof j === "object" && Array.isArray(j.plugins) && !j.name) return j.plugins.flatMap((x: unknown) => fromJson(JSON.stringify(x)));
+  if (isTypingMind(j)) {
     const d = fromTypingMind(j);
     return d ? [d] : [];
   }
   if (j.mcpServers && !j.name) return [{ ...emptyDraft("MCP servers", "file"), mcpServers: mcpFromJson(j) }];
   if (typeof j.name === "string") {
     const d = emptyDraft(j.name, "file");
+    const tools = (j.tools ?? []) as PluginTool[];
     return [
       {
         ...d,
         ...j,
-        tools: (j.tools ?? []) as PluginTool[],
+        tools,
         skills: (j.skills ?? []) as PluginSkill[],
         commands: (j.commands ?? []) as PluginCommand[],
         agents: (j.agents ?? []) as PluginAgentDef[],
         mcpServers: mcpFromJson({ mcpServers: Object.fromEntries(((j.mcpServers ?? []) as McpServerConfig[]).map((m) => [m.name, m])) }),
         settings: (j.settings ?? []) as PluginSettingDef[],
+        engines: Array.isArray(j.engines) ? (j.engines as PluginEngine[]).map((e, i) => ({ ...e, id: e.id || `engine-${i + 1}` })) : suggestEngines(tools),
         values: j.values ?? {},
         enabled: true,
       },

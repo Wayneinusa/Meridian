@@ -222,3 +222,72 @@ export async function accessToken(id: string, force = false): Promise<string | n
 export function resourceMetadataFrom(header: string | null): string | undefined {
   return header ? /resource_metadata="([^"]+)"/.exec(header)?.[1] : undefined;
 }
+
+export interface DeviceCode {
+  user_code: string;
+  verification_url: string;
+  /** a link that already contains the code, when the service offers one */
+  verification_url_complete?: string;
+  expires_in: number;
+}
+
+/**
+ * Sign in with a code shown on screen (OAuth device flow, RFC 8628). Works the
+ * same on every platform: no redirect address to register, nothing to catch.
+ * Google and Microsoft both support it for apps people register themselves.
+ */
+export async function deviceSignIn(opts: {
+  deviceEndpoint: string;
+  tokenEndpoint: string;
+  clientId: string;
+  clientSecret?: string;
+  scopes: string[];
+  onCode: (code: DeviceCode) => void;
+  signal?: AbortSignal;
+}): Promise<OAuthTokens> {
+  const form = new URLSearchParams({ client_id: opts.clientId, scope: opts.scopes.join(" ") });
+  const res = await httpFetch(opts.deviceEndpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }, body: form.toString(), signal: opts.signal });
+  if (!res.ok) throw new Error(`The sign-in service refused: ${await readError(res)}`);
+  const d = await res.json();
+  const code: DeviceCode = {
+    user_code: d.user_code,
+    verification_url: d.verification_uri ?? d.verification_url,
+    verification_url_complete: d.verification_uri_complete,
+    expires_in: Number(d.expires_in) || 900,
+  };
+  opts.onCode(code);
+  let interval = (Number(d.interval) || 5) * 1000;
+  const deadline = Date.now() + code.expires_in * 1000;
+  const client = { client_id: opts.clientId, client_secret: opts.clientSecret };
+  for (;;) {
+    if (Date.now() > deadline) throw new Error("The code expired before sign-in finished. Try again.");
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(resolve, interval);
+      opts.signal?.addEventListener("abort", () => (clearTimeout(t), reject(new DOMException("Aborted", "AbortError"))));
+    });
+    const body = new URLSearchParams({ client_id: opts.clientId, device_code: d.device_code, grant_type: "urn:ietf:params:oauth:grant-type:device_code" });
+    if (opts.clientSecret) body.set("client_secret", opts.clientSecret);
+    const tr = await httpFetch(opts.tokenEndpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }, body: body.toString(), signal: opts.signal });
+    const j = await tr.json().catch(() => ({}));
+    if (tr.ok && j.access_token) {
+      return {
+        access_token: j.access_token,
+        refresh_token: j.refresh_token,
+        expires_at: j.expires_in ? Date.now() + Number(j.expires_in) * 1000 : undefined,
+        token_type: j.token_type,
+        scope: j.scope,
+        client_id: client.client_id,
+        client_secret: client.client_secret,
+        token_endpoint: opts.tokenEndpoint,
+      };
+    }
+    if (j.error === "authorization_pending") continue;
+    if (j.error === "slow_down") {
+      interval += 5000;
+      continue;
+    }
+    if (j.error === "access_denied") throw new Error("Sign-in was declined.");
+    if (j.error === "expired_token") throw new Error("The code expired before sign-in finished. Try again.");
+    throw new Error(`Sign-in failed: ${j.error_description ?? j.error ?? tr.status}`);
+  }
+}

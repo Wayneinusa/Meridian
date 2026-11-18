@@ -1,7 +1,46 @@
 // Core data model. Everything in here is plain JSON so it can be written to
 // disk, synced through a folder (iCloud Drive) and packed into backups.
 
-export type ProviderKind = "anthropic" | "openai" | "gemini" | "xai" | "openai-compatible";
+export type ProviderKind =
+  | "anthropic"
+  | "openai"
+  | "gemini"
+  | "xai"
+  | "openai-compatible"
+  // image / video only (free or free-credit services)
+  | "pollinations"
+  | "horde"
+  | "cloudflare"
+  | "fal"
+  | "runway"
+  // a custom media endpoint described by request templates
+  | "custom-media"
+  // image / video engines that installed plugins provide (never stored in settings)
+  | "plugin";
+
+/**
+ * A media endpoint described by templates, for self-hosted servers, free trials
+ * and plugin engines. Placeholders: {{prompt}} {{model}} {{width}} {{height}}
+ * {{aspect_ratio}} {{seconds}} {{count}} {{seed}} {{image}} (data URI of the first
+ * input image) {{key}} (the provider key) and {{settings.KEY}} (plugin settings).
+ */
+export interface MediaHttpSpec {
+  method: "GET" | "POST";
+  url: string;
+  headers?: Record<string, string>;
+  /** JSON body (POST) */
+  body?: string;
+  /** dot path to the result in the JSON response (a URL, data URI, base64 or list of them). Found automatically when empty. */
+  resultPath?: string;
+  /** for job APIs: dot path to the job id in the first response */
+  jobIdPath?: string;
+  /** for job APIs: URL to poll, with {{id}} */
+  pollUrl?: string;
+  /** dot path to the status in the poll response */
+  statusPath?: string;
+  /** status values that mean the job failed (regex) */
+  failedPattern?: string;
+}
 
 export interface ModelCaps {
   /** accepts image input */
@@ -46,6 +85,15 @@ export interface ProviderConfig {
   hasKey?: boolean;
   /** extra HTTP headers sent with every request (non-secret) */
   headers?: Record<string, string>;
+  /** Cloudflare: the account id that goes into the API address */
+  accountId?: string;
+  /** openai-compatible / custom: which video API the server speaks */
+  videoApi?: "openai" | "xai" | "fal" | "template";
+  /** custom-media: request templates */
+  imageTemplate?: MediaHttpSpec;
+  videoTemplate?: MediaHttpSpec;
+  /** plugin engines: the plugin that provides them */
+  pluginId?: string;
 }
 
 /** Options for image and video generation. Unset fields use the model's default. */
@@ -144,6 +192,8 @@ export interface Conversation {
   media?: MediaOptions;
   /** the chat model to return to after switching to image or video mode */
   chatModel?: ModelRef;
+  /** the image / video backend last used in this chat (switching modes comes back to it) */
+  mediaModels?: { image?: ModelRef; video?: ModelRef };
   projectId?: string;
   agentId?: string;
   archived?: boolean;
@@ -252,6 +302,18 @@ export interface ModelParams {
   extraBody?: Record<string, unknown>;
 }
 
+export interface CloudSync {
+  provider: "google" | "onedrive";
+  /** the OAuth app the user registered (see the README) */
+  clientId: string;
+  /** Google "TVs and Limited Input devices" clients come with a secret */
+  clientSecret?: string;
+  /** Microsoft: "common", "consumers" or a tenant id */
+  tenant?: string;
+  /** shown in Settings once signed in */
+  account?: string;
+}
+
 export interface Settings {
   theme: "system" | "light" | "dark";
   providers: ProviderConfig[];
@@ -283,6 +345,8 @@ export interface Settings {
     icloud: boolean;
     /** any platform with a file system: sync through this folder (e.g. iCloud Drive on Windows) */
     folder?: string;
+    /** sync through Google Drive or OneDrive as well (every platform) */
+    cloud?: CloudSync;
     auto: boolean;
   };
   maxAgentSteps: number;
@@ -413,6 +477,21 @@ export interface PluginTool {
   code?: string;
   /** ask before each call (default: only for non-GET HTTP tools) */
   confirm?: boolean;
+  /** TypingMind: how the result is used ("respond_to_ai", "render_markdown", "render_html") */
+  outputType?: string;
+}
+
+/** An image or video generator a plugin adds to the Image / Video backends. */
+export interface PluginEngine {
+  id: string;
+  kind: "image" | "video";
+  name: string;
+  /** call one of the plugin's tools with { prompt, aspect_ratio, width, height, count, seconds, image } */
+  tool?: string;
+  /** or an HTTP template */
+  http?: MediaHttpSpec;
+  /** or JavaScript: body of an async function (args, settings, fetchJson) returning a URL, data URI or { url | images | video } */
+  code?: string;
 }
 
 export interface PluginSkill {
@@ -463,6 +542,8 @@ export interface Plugin extends LibItem {
   agents: PluginAgentDef[];
   mcpServers: Omit<McpServerConfig, "enabled">[];
   settings: PluginSettingDef[];
+  /** image / video generators this plugin provides */
+  engines?: PluginEngine[];
   /** non-secret setting values (secrets live in the keychain) */
   values: Record<string, string>;
 }

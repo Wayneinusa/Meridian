@@ -139,6 +139,16 @@ jobs:
           path: Meridian-unsigned.ipa
           if-no-files-found: error
 
+      - name: Add the app to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: "Built from ${{ github.sha }}. Windows: run the .exe to install or upgrade (chats and settings are kept). iPhone/iPad: Meridian-unsigned.ipa, installed with Sideloadly or AltStore."
+        run: |
+          gh release upload "v$MERIDIAN_VERSION" Meridian-unsigned.ipa --repo "${{ github.repository }}" --clobber \
+          || gh release create "v$MERIDIAN_VERSION" Meridian-unsigned.ipa --repo "${{ github.repository }}" --target "${{ github.sha }}" --latest \
+               --title "Meridian $MERIDIAN_VERSION" --notes "$RELEASE_NOTES" \
+          || gh release upload "v$MERIDIAN_VERSION" Meridian-unsigned.ipa --repo "${{ github.repository }}" --clobber
+
       - name: Write report
         if: always()
         run: |
@@ -214,11 +224,14 @@ jobs:
       - name: Publish the installer as a release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: "Built from ${{ github.sha }}. Windows: run the .exe to install or upgrade (chats and settings are kept). iPhone/iPad: Meridian-unsigned.ipa, installed with Sideloadly or AltStore, when that build succeeded."
         run: |
+          # the iPhone/iPad job may have created the release already: then just add the file
           gh release create "v$MERIDIAN_VERSION" src-tauri/target/release/bundle/nsis/*.exe \
             --repo "${{ github.repository }}" --target "${{ github.sha }}" --latest \
-            --title "Meridian $MERIDIAN_VERSION for Windows" \
-            --notes "Windows installer built from ${{ github.sha }}. Run it to install or upgrade; your chats and settings are kept."
+            --title "Meridian $MERIDIAN_VERSION" \
+            --notes "$RELEASE_NOTES" \
+          || gh release upload "v$MERIDIAN_VERSION" src-tauri/target/release/bundle/nsis/*.exe --repo "${{ github.repository }}" --clobber
       - name: Write report
         if: always()
         run: |

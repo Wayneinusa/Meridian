@@ -10,8 +10,9 @@ import { deleteSecret, getSecret, providerKeyName, setSecret } from "../platform
 import { GALLERY } from "../plugins/gallery";
 import type { PluginDraft } from "../plugins/import";
 import { pluginSecretName } from "../plugins/runtime";
-import { pickDefaultMedia } from "../providers/media";
-import { adapterFor, findModel, manualModel, mergeModelLists } from "../providers/registry";
+import { engineProviders, runPluginEngine } from "../plugins/engines";
+import { pickDefaultMedia, setPluginEngineRunner } from "../providers/media";
+import { adapterFor, allProviders, findModel, manualModel, mergeModelLists, setPluginProviders } from "../providers/registry";
 import type { BlobAccess } from "../providers/types";
 import { wakeModel, type WakeResult } from "../providers/wake";
 import { BACKUP_EXT, exportBackup, importBackup } from "../storage/backup";
@@ -20,6 +21,8 @@ import { Library } from "../storage/library";
 import { blobRefsOf, emptyConversation } from "../storage/merge";
 import { blobKey, Repo } from "../storage/repo";
 import { emptySyncState, syncWithRemote, type SyncState } from "../storage/sync";
+import { CLOUD_NAMES, cloudKV, cloudSignIn, cloudSignOut } from "../storage/cloudkv";
+import type { DeviceCode } from "../connectors/oauth";
 import { chatToHtml, chatToMarkdown, detectAndImport } from "../storage/transfer";
 import { extractText } from "../tools/extract";
 import { buildDocx, buildPdf } from "../tools/files";
@@ -30,6 +33,7 @@ import type { Tool } from "../tools/types";
 import type {
   Agent,
   BlobRef,
+  CloudSync,
   CollectionName,
   CollectionTypes,
   Conversation,
@@ -100,6 +104,7 @@ export interface Draft {
   params?: ModelParams;
   media?: MediaOptions;
   chatModel?: ModelRef;
+  mediaModels?: { image?: ModelRef; video?: ModelRef };
   agentId?: string;
   projectId?: string;
   mode?: "chat" | "research";
@@ -192,8 +197,12 @@ function refreshMetas() {
 function refreshLib() {
   const lib = emptyLib();
   for (const c of COLLECTIONS) (lib as Record<string, unknown>)[c] = library.list(c);
+  // plugins that make images / videos show up as backends
+  setPluginProviders(engineProviders(lib.plugins));
   set({ lib });
 }
+
+setPluginEngineRunner((req, kind) => runPluginEngine(req, kind, { plugins: () => library.list("plugins"), getSecret: async (n) => getSecret(n) }));
 
 let renderQueued = false;
 function render(id: string) {
@@ -445,6 +454,7 @@ function ensureConversation(): Conversation {
   c.params = d.params;
   c.media = d.media;
   c.chatModel = d.chatModel;
+  c.mediaModels = d.mediaModels;
   c.agentId = d.agentId;
   c.projectId = d.projectId;
   c.mode = d.mode;
@@ -483,17 +493,25 @@ export async function setChatModel(ref: ModelRef) {
   const current = currentModelRef(c ?? null);
   const curKind = findModel(settings, current)?.model.kind ?? "chat";
   if (!c) {
-    setDraft({ model: ref, ...(kind !== "chat" && curKind === "chat" ? { chatModel: current } : {}) });
+    const d = get().draft;
+    setDraft({ model: ref, ...(kind !== "chat" && curKind === "chat" ? { chatModel: current } : {}), ...(kind !== "chat" ? { mediaModels: { ...d.mediaModels, [kind]: ref } } : {}) });
   } else {
     if (kind !== "chat" && curKind === "chat") c.chatModel = current;
+    if (kind !== "chat") c.mediaModels = { ...c.mediaModels, [kind]: ref };
     c.model = ref;
     touch(c);
     render(c.id);
     await saveNow(c.id);
   }
   if (kind === "chat") await updateSettings({ defaultModel: ref });
-  else if (kind === "image") await updateSettings({ imageModel: ref });
-  else await updateSettings({ videoModel: ref });
+  // the first image / video backend someone picks becomes the default; after that "Make default" changes it
+  else if (kind === "image" && !findModel(settings, settings.imageModel)) await updateSettings({ imageModel: ref });
+  else if (kind === "video" && !findModel(settings, settings.videoModel)) await updateSettings({ videoModel: ref });
+}
+
+/** The image / video backend new chats start with. */
+export async function setDefaultMedia(kind: "image" | "video", ref: ModelRef | undefined) {
+  await updateSettings(kind === "image" ? { imageModel: ref } : { videoModel: ref });
 }
 
 /** Chat / Image / Video switch in the composer. */
@@ -508,7 +526,10 @@ export async function setChatMode(mode: "chat" | "image" | "video"): Promise<boo
     await setChatModel(fallback);
     return true;
   }
-  const ref = mediaModelFor(settings, mode);
+  // already in this mode: keep the backend chosen for this chat
+  if (findModel(settings, currentModelRef(c ?? null))?.model.kind === mode) return true;
+  const remembered = (c ? c.mediaModels : get().draft.mediaModels)?.[mode];
+  const ref = remembered && findModel(settings, remembered) ? remembered : mediaModelFor(settings, mode);
   if (!ref) {
     toast(noMediaModelMessage(mode), "error");
     return false;
@@ -1055,15 +1076,34 @@ export async function usageStats(sinceDays: number): Promise<{ rows: UsageRow[];
 
 // ---------------------------------------------------------------- sync & backup
 
-function syncTarget(settings: Settings): { kv: KV; id: string; label: string } | null {
-  if (!isTauri) return null;
+interface SyncTarget {
+  kv: KV;
+  id: string;
+  label: string;
+  /** where this target's sync state is kept on this device */
+  stateKey: string;
+}
+
+function syncTargets(settings: Settings): SyncTarget[] {
+  const out: SyncTarget[] = [];
   const p = platform();
-  if (settings.sync.icloud && p.icloudContainer) {
+  if (isTauri && settings.sync.icloud && p.icloudContainer) {
     const dir = joinPath(p.icloudContainer, "Documents");
-    return { kv: new FsKV(dir), id: `icloud:${dir}`, label: "iCloud" };
+    out.push({ kv: new FsKV(dir), id: `icloud:${dir}`, label: "iCloud", stateKey: "sync-state.json" });
+  } else if (isTauri && settings.sync.folder) {
+    out.push({ kv: new FsKV(settings.sync.folder), id: `folder:${settings.sync.folder}`, label: settings.sync.folder, stateKey: "sync-state.json" });
   }
-  if (settings.sync.folder) return { kv: new FsKV(settings.sync.folder), id: `folder:${settings.sync.folder}`, label: settings.sync.folder };
-  return null;
+  const cloud = settings.sync.cloud;
+  if (cloud?.account) {
+    out.push({ kv: cloudKV(cloud), id: `${cloud.provider}:${cloud.clientId}`, label: CLOUD_NAMES[cloud.provider], stateKey: "sync-state-cloud.json" });
+  }
+  return out;
+}
+
+/** Label for the sync status line ("iCloud + OneDrive"). */
+function syncTarget(settings: Settings): { label: string } | null {
+  const list = syncTargets(settings);
+  return list.length ? { label: list.map((t) => t.label).join(" + ") } : null;
 }
 
 let syncing = false;
@@ -1078,31 +1118,45 @@ export function scheduleSync() {
 }
 
 export async function syncNow(quiet = false) {
-  const target = syncTarget(get().settings);
-  if (!target) {
+  const targets = syncTargets(get().settings);
+  if (!targets.length) {
     set({ sync: { state: "off" } });
-    if (!quiet) toast("Sync is not set up. Choose a sync folder in Settings → Sync & backup.", "info");
+    if (!quiet) toast("Sync is not set up. Turn on iCloud, choose a folder, or sign in to Google Drive or OneDrive in Settings → Sync & backup.", "info");
     return;
   }
   if (syncing || Object.keys(get().busy).length) return;
   syncing = true;
-  set({ sync: { ...get().sync, state: "syncing", target: target.label } });
+  const label = targets.map((t) => t.label).join(" + ");
+  set({ sync: { ...get().sync, state: "syncing", target: label } });
+  const total = { pulled: 0, pushed: 0, libPulled: 0, libPushed: 0, errors: [] as string[] };
   try {
     for (const id of [...saveTimers.keys()]) await saveNow(id);
-    if (platform().icloudContainer && target.id.startsWith("icloud:")) {
-      await invoke("icloud_prepare", { dir: joinPath(platform().icloudContainer!, "Documents") }).catch(() => undefined);
+    // each target merges into this device, so a chat from iCloud reaches OneDrive in the same run
+    for (const target of targets) {
+      try {
+        if (platform().icloudContainer && target.id.startsWith("icloud:")) {
+          await invoke("icloud_prepare", { dir: joinPath(platform().icloudContainer!, "Documents") }).catch(() => undefined);
+        }
+        let state: SyncState = emptySyncState(target.id);
+        try {
+          const raw = await kv.getText(target.stateKey);
+          const parsed = raw ? (JSON.parse(raw) as SyncState) : null;
+          if (parsed && parsed.remoteId === target.id) state = parsed;
+        } catch {
+          /* start fresh */
+        }
+        const report = await syncWithRemote(repo, target.kv, state, library);
+        await kv.setText(target.stateKey, JSON.stringify(state));
+        total.pulled += report.pulled;
+        total.pushed += report.pushed;
+        total.libPulled += report.libPulled;
+        total.libPushed += report.libPushed;
+        total.errors.push(...report.errors.map((e) => (targets.length > 1 ? `${target.label}: ${e}` : e)));
+      } catch (e) {
+        total.errors.push(`${target.label}: ${errText(e)}`);
+      }
     }
-    let state: SyncState = emptySyncState(target.id);
-    try {
-      const raw = await kv.getText("sync-state.json");
-      const parsed = raw ? (JSON.parse(raw) as SyncState) : null;
-      if (parsed && parsed.remoteId === target.id) state = parsed;
-    } catch {
-      /* start fresh */
-    }
-    const report = await syncWithRemote(repo, target.kv, state, library);
-    await kv.setText("sync-state.json", JSON.stringify(state));
-    if (report.pulled) {
+    if (total.pulled) {
       for (const id of [...live.keys()]) {
         if (privateIds.has(id)) continue;
         const fresh = await repo.get(id);
@@ -1115,18 +1169,30 @@ export async function syncNow(quiet = false) {
       if (a) set({ active: { ...a, messages: a.messages.slice() } });
     }
     refreshMetas();
-    const message = report.errors.length ? `${report.errors.length} item(s) could not be synced: ${report.errors[0]}` : undefined;
-    set({ sync: { state: report.errors.length ? "error" : "idle", target: target.label, at: Date.now(), message } });
+    const message = total.errors.length ? `${total.errors.length} item(s) could not be synced: ${total.errors[0]}` : undefined;
+    set({ sync: { state: total.errors.length ? "error" : "idle", target: label, at: Date.now(), message } });
     if (!quiet) {
-      const moved = report.pulled + report.pushed + report.libPulled + report.libPushed;
-      toast(report.errors.length ? message! : moved ? `Synced: ${report.pulled + report.libPulled} received, ${report.pushed + report.libPushed} sent.` : "Everything is up to date.", report.errors.length ? "error" : "ok");
+      const moved = total.pulled + total.pushed + total.libPulled + total.libPushed;
+      toast(total.errors.length ? message! : moved ? `Synced: ${total.pulled + total.libPulled} received, ${total.pushed + total.libPushed} sent.` : "Everything is up to date.", total.errors.length ? "error" : "ok");
     }
-  } catch (e) {
-    set({ sync: { state: "error", target: target.label, at: Date.now(), message: errText(e) } });
-    if (!quiet) toast(`Sync failed: ${errText(e)}`, "error");
   } finally {
     syncing = false;
   }
+}
+
+/** Sign in to Google Drive or OneDrive with a code, then sync with it. */
+export async function connectCloudSync(cfg: CloudSync, onCode: (c: DeviceCode) => void, signal?: AbortSignal) {
+  const { account } = await cloudSignIn(cfg, onCode, signal);
+  await updateSettings((s) => ({ sync: { ...s.sync, cloud: { provider: cfg.provider, clientId: cfg.clientId.trim(), tenant: cfg.tenant?.trim() || undefined, account } } }));
+  toast(`Signed in to ${CLOUD_NAMES[cfg.provider]} as ${account}. Syncing now.`, "ok");
+  void syncNow(false);
+}
+
+export async function disconnectCloudSync() {
+  const cloud = get().settings.sync.cloud;
+  if (cloud) await cloudSignOut(cloud.provider);
+  await kv.remove("sync-state-cloud.json").catch(() => undefined);
+  await updateSettings((s) => ({ sync: { ...s.sync, cloud: undefined } }));
 }
 
 export async function exportBackupFile(includeFiles: boolean) {
@@ -1172,7 +1238,7 @@ export async function loadBlob(blobId: string) {
 
 /** Default media models are picked automatically; this says which (for the settings page). */
 export function autoMediaModel(kind: "image" | "video"): ModelRef | undefined {
-  return pickDefaultMedia(get().settings.providers, kind);
+  return pickDefaultMedia(allProviders(get().settings), kind);
 }
 
 export type { TurnVersion };

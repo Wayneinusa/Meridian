@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelKind } from "../types";
 import { currentModelRef, setChatModel, toggleFavorite, useApp } from "../state/store";
 import { findModel } from "../providers/registry";
+import { modelLabel, providerReady } from "../providers/backends";
+import { pricingOf, setupNeeded, useProviders } from "./BackendPicker";
 import type { ModelInfo } from "../types";
 import { Icon } from "./icons";
 
@@ -17,6 +19,7 @@ export function capBadges(m: ModelInfo): string[] {
 
 export function ModelPicker() {
   const settings = useApp((s) => s.settings);
+  const providers = useProviders();
   const active = useApp((s) => s.active);
   // re-read on every store change so a choice made before the chat exists shows up
   useApp((s) => s.metas);
@@ -42,7 +45,7 @@ export function ModelPicker() {
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return settings.providers
+    return providers
       .filter((p) => p.enabled)
       .map((p) => ({
         provider: p,
@@ -51,12 +54,12 @@ export function ModelPicker() {
           .sort((a, b) => Number(settings.favorites.includes(`${p.id}::${b.id}`)) - Number(settings.favorites.includes(`${p.id}::${a.id}`))),
       }))
       .filter((g) => g.models.length);
-  }, [settings.providers, query, tab]);
+  }, [providers, query, tab]);
 
   return (
     <div className="pop-anchor" ref={wrap}>
       <button className="model-btn" onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open} title="Choose model">
-        <span>{current ? current.model.name : "Choose model"}</span>
+        <span>{current ? modelLabel(current.provider, current.model) : "Choose model"}</span>
         <Icon.chevron />
       </button>
       {open && (
@@ -74,15 +77,16 @@ export function ModelPicker() {
               {tab === "chat"
                 ? "No models yet. Add an API key in Settings → Providers & keys and the model list is fetched for you."
                 : tab === "image"
-                  ? "No image models yet. Add a key for OpenAI, Google Gemini, xAI (Grok) or OpenRouter in Settings → Providers & keys."
-                  : "No video models yet. Add a key for OpenAI (Sora), Google Gemini (Veo) or xAI (Grok Imagine) in Settings → Providers & keys."}
+                  ? "No image backends are on. Turn on Pollinations or AI Horde (free) in Settings → Providers & keys."
+                  : "No video models yet. Paste a free Pollinations key (enter.pollinations.ai) in Settings → Providers & keys, or a key for OpenAI, Google, xAI, fal.ai or Runway."}
             </div>
           )}
           {groups.map((g) => (
             <div key={g.provider.id}>
               <div className="menu-head">
                 {g.provider.name}
-                {!g.provider.hasKey && g.provider.kind !== "openai-compatible" ? " · no key" : ""}
+                {pricingOf(g.provider) === "free" ? " · free" : ""}
+                {tab !== "chat" && setupNeeded(g.provider, tab) ? ` · ${setupNeeded(g.provider, tab)}` : !providerReady(g.provider) && tab === "chat" ? " · no key" : ""}
               </div>
               {g.models.map((m) => {
                 const sel = ref?.providerId === g.provider.id && ref.modelId === m.id;

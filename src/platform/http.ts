@@ -19,7 +19,9 @@ export async function readError(res: Response): Promise<string> {
   }
   try {
     const j = JSON.parse(body);
-    const msg = j?.error?.message ?? j?.error ?? j?.message;
+    // OpenAI / most APIs, Cloudflare ({errors:[{message}]}), fal / FastAPI ({detail}), AI Horde ({message})
+    const detail = Array.isArray(j?.detail) ? j.detail.map((d: { msg?: string }) => d?.msg ?? JSON.stringify(d)).join("; ") : j?.detail;
+    const msg = j?.error?.message ?? j?.error ?? j?.errors?.[0]?.message ?? detail ?? j?.message ?? j?.failure;
     if (typeof msg === "string") return `${res.status}: ${msg}`;
   } catch {
     /* not json */

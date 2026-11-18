@@ -2,11 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { invoke, platform } from "../platform";
 import { pickFolder } from "../platform/files";
 import { deleteSecret, mcpTokenName, setSecret } from "../platform/secrets";
-import { COMPATIBLE_PRESETS, manualModel } from "../providers/registry";
-import { addManualModel, cancelWake, exportBackupFile, importBackupFile, refreshModels, removeModel, saveProviderKey, syncNow, toast, updateSettings, useApp, wakeUp } from "../state/store";
+import { BACKENDS, providerReady } from "../providers/backends";
+import { backendProvider, COMPATIBLE_PRESETS, manualModel } from "../providers/registry";
+import { openExternal } from "../platform/files";
+import { addManualModel, cancelWake, connectCloudSync, disconnectCloudSync, exportBackupFile, importBackupFile, refreshModels, removeModel, saveProviderKey, syncNow, toast, updateSettings, useApp, wakeUp } from "../state/store";
 import { mcpManager } from "../tools/mcp";
-import type { McpServerConfig, ModelInfo, ModelRef, ProviderConfig, Settings } from "../types";
+import { CLOUD_NAMES } from "../storage/cloudkv";
+import type { DeviceCode } from "../connectors/oauth";
+import type { CloudSync, McpServerConfig, MediaHttpSpec, ModelInfo, ModelRef, ProviderConfig, ProviderKind, Settings } from "../types";
 import { modelKey, uid } from "../types";
+import { useProviders } from "./BackendPicker";
 import { Icon } from "./icons";
 import { ConnectorsTab } from "./ConnectorsTab";
 import { MemoryTab, PluginsTab } from "./PluginsTab";
@@ -45,7 +50,9 @@ function ProviderCard({ provider }: { provider: ProviderConfig }) {
   const [modelId, setModelId] = useState("");
   const [modelKind, setModelKind] = useState<"" | "chat" | "image" | "video">("");
   const [waking, setWaking] = useState<Record<string, string>>({});
-  const builtin = ["anthropic", "openai", "gemini", "xai"].includes(provider.id);
+  const builtin = ["anthropic", "openai", "gemini", "xai", "pollinations", "horde"].includes(provider.id);
+  const media = BACKENDS[provider.kind];
+  const ready = providerReady(provider);
   const manual = provider.models.filter((m) => m.userEdited);
 
   const wake = async (id: string) => {
@@ -97,27 +104,57 @@ function ProviderCard({ provider }: { provider: ProviderConfig }) {
     <div className="card">
       <div className="row" style={{ marginBottom: 10 }}>
         <h4 className="grow">{provider.name}</h4>
-        <span className={`badge ${provider.hasKey ? "ok" : ""}`}>{provider.hasKey ? "key saved" : provider.kind === "openai-compatible" ? "no key" : "needs a key"}</span>
-        <span className="badge">{provider.models.length} models</span>
+        {media && <span className={`badge ${media.pricing === "free" ? "ok" : ""}`}>{media.pricing === "free" ? "Free" : media.pricing === "free-credits" ? "Free daily allowance" : media.pricing === "custom" ? "Custom" : media.pricing === "trial" ? "Pay per use" : "Paid"}</span>}
+        {media ? (
+          <span className={`badge ${ready ? "ok" : ""}`}>{!provider.enabled ? "off" : ready ? (provider.hasKey ? "ready · key saved" : "ready · no key needed") : "needs setup"}</span>
+        ) : (
+          <span className={`badge ${provider.hasKey ? "ok" : ""}`}>{provider.hasKey ? "key saved" : provider.kind === "openai-compatible" ? "no key" : "needs a key"}</span>
+        )}
+        <span className="badge">{provider.models.length} model{provider.models.length === 1 ? "" : "s"}</span>
       </div>
+      {media && (
+        <>
+          <p className="hint" style={{ marginBottom: 8 }}>{media.help}</p>
+          <div className="row wrap" style={{ marginBottom: 10 }}>
+            <label className="switch" style={{ margin: 0 }}>
+              <input type="checkbox" checked={provider.enabled} onChange={(e) => void patch({ enabled: e.target.checked })} aria-label={`Use ${provider.name}`} />
+              <span>Use {provider.name}</span>
+            </label>
+            {media.keyUrl && (
+              <button className="btn small" onClick={() => void openExternal(media.keyUrl!)}>
+                <Icon.globe /> {media.keyless === "none" ? "Get a key" : "Get a free key"}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+      {media?.needsAccountId && (
+        <label className="field">
+          <span>Account ID</span>
+          <input type="text" spellCheck={false} autoCapitalize="off" defaultValue={provider.accountId ?? ""} placeholder="32 characters, from the Cloudflare dashboard" onBlur={(e) => e.target.value.trim() !== (provider.accountId ?? "") && void patch({ accountId: e.target.value.trim() || undefined })} aria-label="Cloudflare account ID" />
+        </label>
+      )}
       {!builtin && (
         <label className="field">
           <span>Name</span>
           <input type="text" defaultValue={provider.name} onBlur={(e) => e.target.value.trim() && e.target.value !== provider.name && void patch({ name: e.target.value.trim() })} />
         </label>
       )}
+      {(!media || provider.kind === "custom-media") && (
+        <label className="field">
+          <span>API endpoint</span>
+          <input type="url" defaultValue={provider.baseUrl} spellCheck={false} placeholder={provider.kind === "custom-media" ? "https://your-server/v1" : undefined} onBlur={(e) => e.target.value !== provider.baseUrl && void patch({ baseUrl: e.target.value.trim() })} />
+        </label>
+      )}
       <label className="field">
-        <span>API endpoint</span>
-        <input type="url" defaultValue={provider.baseUrl} spellCheck={false} onBlur={(e) => e.target.value !== provider.baseUrl && void patch({ baseUrl: e.target.value.trim() })} />
-      </label>
-      <label className="field">
-        <span>API key</span>
+        <span>{media?.keyLabel ?? "API key"}</span>
         <div className="row">
           <input
             type="password"
             autoComplete="off"
             spellCheck={false}
-            placeholder={provider.hasKey ? "•••••••• saved — type to replace" : "Paste your key"}
+            placeholder={provider.hasKey ? "•••••••• saved — type to replace" : media && media.keyless !== "none" ? "Optional" : "Paste your key"}
+            aria-label={`${provider.name} key`}
             value={key}
             onChange={(e) => setKey(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void save()}
@@ -133,7 +170,7 @@ function ProviderCard({ provider }: { provider: ProviderConfig }) {
             spellCheck={false}
             autoCapitalize="off"
             autoCorrect="off"
-            placeholder="e.g. meta-llama/Llama-3.3-70B-Instruct"
+            placeholder={provider.kind === "fal" ? "e.g. fal-ai/flux/dev" : provider.kind === "pollinations" ? "e.g. alibaba/wan-2.2-fast" : provider.kind === "cloudflare" ? "e.g. @cf/black-forest-labs/flux-1-schnell" : "e.g. meta-llama/Llama-3.3-70B-Instruct"}
             value={modelId}
             onChange={(e) => setModelId(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void addModel(true)}
@@ -147,14 +184,19 @@ function ProviderCard({ provider }: { provider: ProviderConfig }) {
             <option value="video">Video</option>
           </select>
           <button className="btn" disabled={!modelId.trim()} onClick={() => void addModel(false)}>Add</button>
-          <button className="btn primary" disabled={!modelId.trim()} onClick={() => void addModel(true)} title="Add the model and send a test message until it has loaded">
-            Add &amp; wake up
-          </button>
+          {!media && (
+            <button className="btn primary" disabled={!modelId.trim()} onClick={() => void addModel(true)} title="Add the model and send a test message until it has loaded">
+              Add &amp; wake up
+            </button>
+          )}
         </div>
         <small className="hint">
-          For models the provider does not list right now, such as cold models that load on first use. Wake up sends a tiny test message and keeps retrying for up to 10 minutes while the model loads.
+          {media
+            ? "For a model this service has that is not in the list. It then appears in the Image or Video backend list."
+            : "For models the provider does not list right now, such as cold models that load on first use. Wake up sends a tiny test message and keeps retrying for up to 10 minutes while the model loads."}
         </small>
       </label>
+      {(provider.kind === "custom-media" || provider.kind === "openai-compatible") && <MediaApiFields provider={provider} patch={patch} />}
       {manual.length > 0 && (
         <div style={{ marginBottom: 10 }}>
           {manual.map((m) => (
@@ -202,6 +244,86 @@ function ProviderCard({ provider }: { provider: ProviderConfig }) {
   );
 }
 
+const TEMPLATE_EXAMPLE = `{
+  "method": "POST",
+  "url": "https://my-server.example/generate",
+  "headers": { "Authorization": "Bearer {{key}}" },
+  "body": { "prompt": "{{prompt}}", "width": "{{width}}", "height": "{{height}}" },
+  "resultPath": "images"
+}`;
+
+function TemplateField({ label, value, onSave }: { label: string; value?: MediaHttpSpec; onSave: (v?: MediaHttpSpec) => void }) {
+  const [text, setText] = useState(value ? JSON.stringify({ ...value, body: value.body ? safeParse(value.body) : undefined }, null, 2) : "");
+  const [err, setErr] = useState("");
+  const save = () => {
+    if (!text.trim()) {
+      setErr("");
+      return onSave(undefined);
+    }
+    try {
+      const j = JSON.parse(text) as MediaHttpSpec & { body?: unknown };
+      if (!j.url) throw new Error("url is missing");
+      onSave({ ...j, method: j.method === "GET" ? "GET" : "POST", body: j.body == null ? undefined : typeof j.body === "string" ? j.body : JSON.stringify(j.body) });
+      setErr("");
+    } catch (e) {
+      setErr(`Not saved: ${errText(e)}`);
+    }
+  };
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <textarea rows={6} spellCheck={false} placeholder={TEMPLATE_EXAMPLE} value={text} onChange={(e) => setText(e.target.value)} onBlur={save} className="mono" />
+      {err && <small className="note err">{err}</small>}
+    </label>
+  );
+}
+
+function safeParse(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s;
+  }
+}
+
+/** How a custom or OpenAI-compatible server makes images and videos. */
+function MediaApiFields({ provider, patch }: { provider: ProviderConfig; patch: (p: Partial<ProviderConfig>) => Promise<void> }) {
+  const custom = provider.kind === "custom-media";
+  const [open, setOpen] = useState(custom);
+  if (!open)
+    return (
+      <button className="link-btn" style={{ marginBottom: 10 }} onClick={() => setOpen(true)}>
+        Image and video options…
+      </button>
+    );
+  return (
+    <div className="subcard">
+      <label className="field">
+        <span>Video API</span>
+        <select value={provider.videoApi ?? "openai"} onChange={(e) => void patch({ videoApi: e.target.value as ProviderConfig["videoApi"] })} aria-label="Video API">
+          <option value="openai">OpenAI style: POST /videos, poll /videos/&#123;id&#125;</option>
+          <option value="xai">xAI style: POST /videos/generations, poll /videos/&#123;id&#125;</option>
+          <option value="fal">fal queue style: POST /&#123;model&#125;, poll status_url</option>
+          <option value="template">Described by a template (below)</option>
+        </select>
+      </label>
+      {custom && (
+        <TemplateField
+          label="Image request template (optional; empty = POST /images/generations)"
+          value={provider.imageTemplate}
+          onSave={(v) => void patch({ imageTemplate: v })}
+        />
+      )}
+      {provider.videoApi === "template" && <TemplateField label="Video request template" value={provider.videoTemplate} onSave={(v) => void patch({ videoTemplate: v })} />}
+      <small className="hint">
+        Templates fill in {"{{prompt}} {{model}} {{width}} {{height}} {{aspect_ratio}} {{seconds}} {{count}} {{seed}} {{image}}"} (the attached picture as a data URI) and {"{{key}}"}. The image or video is found in the response automatically (a file, a link, a data URI or base64), or set resultPath. For job APIs add jobIdPath, pollUrl (with {"{{id}}"}), statusPath and failedPattern.
+      </small>
+    </div>
+  );
+}
+
+const MEDIA_KINDS: ProviderKind[] = ["pollinations", "horde", "cloudflare", "fal", "runway", "custom-media"];
+
 function ProvidersTab({ settings }: { settings: Settings }) {
   const [preset, setPreset] = useState("");
   const p = platform();
@@ -213,7 +335,34 @@ function ProvidersTab({ settings }: { settings: Settings }) {
         Meridian talks to model providers directly with your own API keys. Keys are stored in {where} on this device only. They are never put in chats, sync folders or backups.
       </p>
       {p.os === "web" && <div className="note warn" style={{ marginBottom: 12 }}>You are running in a browser, where keys can only be kept in browser storage. Use the installed app for keychain storage.</div>}
-      {settings.providers.map((pr) => (
+      <h3 style={{ marginTop: 18 }}>Free image & video</h3>
+      <p>
+        Pollinations and AI Horde work with no sign-up. Pollinations makes video with a free key, Cloudflare has a free daily allowance, and fal.ai, Runway or your own server can be added too. Choose
+        which one to use, and the defaults, from the backend button next to Image / Video in the message box.
+      </p>
+      {settings.providers.filter((pr) => pr.kind in BACKENDS).map((pr) => (
+        <ProviderCard key={pr.id} provider={pr} />
+      ))}
+      <div className="card">
+        <h4 style={{ marginBottom: 8 }}>Add an image / video service</h4>
+        <div className="row wrap">
+          {MEDIA_KINDS.filter((k) => k === "custom-media" || !settings.providers.some((pr) => pr.kind === k)).map((k) => (
+            <button
+              key={k}
+              className="btn"
+              onClick={() => {
+                const id = k === "custom-media" ? uid("media") : k;
+                void updateSettings((st) => ({ providers: [...st.providers, backendProvider(k, id)] })).then(() => toast(`${BACKENDS[k]!.name} added below. ${BACKENDS[k]!.keyless === "all" ? "" : "Paste its key to finish."}`, "ok"));
+              }}
+              title={BACKENDS[k]!.tagline}
+            >
+              <Icon.plus /> {BACKENDS[k]!.name}
+            </button>
+          ))}
+        </div>
+      </div>
+      <h3 style={{ marginTop: 18 }}>Chat providers</h3>
+      {settings.providers.filter((pr) => !(pr.kind in BACKENDS)).map((pr) => (
         <ProviderCard key={pr.id} provider={pr} />
       ))}
       <div className="card">
@@ -247,7 +396,8 @@ function ProvidersTab({ settings }: { settings: Settings }) {
 
 // ---------- models ----------
 
-function ModelSelect({ settings, value, onChange, filter, empty }: { settings: Settings; value?: ModelRef; onChange: (r?: ModelRef) => void; filter: (m: ModelInfo) => boolean; empty: string }) {
+function ModelSelect({ value, onChange, filter, empty }: { settings: Settings; value?: ModelRef; onChange: (r?: ModelRef) => void; filter: (m: ModelInfo) => boolean; empty: string }) {
+  const providers = useProviders();
   return (
     <select
       value={modelKey(value)}
@@ -257,7 +407,7 @@ function ModelSelect({ settings, value, onChange, filter, empty }: { settings: S
       }}
     >
       <option value="">{empty}</option>
-      {settings.providers.map((p) => {
+      {providers.map((p) => {
         const models = p.models.filter(filter);
         if (!models.length) return null;
         return (
@@ -290,14 +440,14 @@ function ModelsTab({ settings }: { settings: Settings }) {
       </label>
       <label className="field">
         <span>Image generation</span>
-        <ModelSelect settings={settings} value={settings.imageModel} onChange={(r) => void updateSettings({ imageModel: r })} filter={(m) => m.kind === "image" || !!m.caps.imageOutput} empty="Off (no image model chosen)" />
+        <ModelSelect settings={settings} value={settings.imageModel} onChange={(r) => void updateSettings({ imageModel: r })} filter={(m) => m.kind === "image" || !!m.caps.imageOutput} empty="Automatic (Pollinations, free)" />
       </label>
       <label className="field">
         <span>Video generation</span>
-        <ModelSelect settings={settings} value={settings.videoModel} onChange={(r) => void updateSettings({ videoModel: r })} filter={(m) => m.kind === "video"} empty="Off (no video model chosen)" />
+        <ModelSelect settings={settings} value={settings.videoModel} onChange={(r) => void updateSettings({ videoModel: r })} filter={(m) => m.kind === "video"} empty="Automatic (first ready video backend)" />
       </label>
       <p className="hint" style={{ marginBottom: 14 }}>
-        Image and video models come from OpenAI, Google or an OpenAI-compatible provider. Add that provider's key and fetch its model list to see them here. Any chat model that can use tools can then ask for pictures and clips.
+        Images and videos come from the free services under Providers & keys (Pollinations, AI Horde, Cloudflare), from plugins that add an engine, or from OpenAI, Google, xAI, OpenRouter, fal.ai and Runway with your key. Any chat model that can use tools can then ask for pictures and clips.
       </p>
 
       <h4>Capabilities per model</h4>
@@ -429,6 +579,104 @@ function ToolsTab({ settings }: { settings: Settings }) {
 
 // ---------- sync & backup ----------
 
+/** Sync chats through Google Drive or OneDrive, on every platform (alongside iCloud or a folder). */
+function CloudSyncCard({ settings }: { settings: Settings }) {
+  const cloud = settings.sync.cloud;
+  const [provider, setProvider] = useState<CloudSync["provider"]>(cloud?.provider ?? "onedrive");
+  const [clientId, setClientId] = useState(cloud?.clientId ?? "");
+  const [secret, setSecret] = useState("");
+  const [tenant, setTenant] = useState(cloud?.tenant ?? "");
+  const [code, setCode] = useState<DeviceCode | null>(null);
+  const [busy, setBusy] = useState(false);
+  const abort = useRef<AbortController | null>(null);
+  const google = provider === "google";
+
+  if (cloud?.account) {
+    return (
+      <div className="card">
+        <div className="row">
+          <span className="grow">
+            Syncing with <b>{CLOUD_NAMES[cloud.provider]}</b> as {cloud.account}.{" "}
+            <span className="hint">{cloud.provider === "google" ? "Chats are in the Meridian folder in My Drive." : "Chats are in Apps › your app's folder in OneDrive."}</span>
+          </span>
+          <button className="btn small danger" onClick={() => confirm(`Stop syncing with ${CLOUD_NAMES[cloud.provider]}? Chats stay on this device and in the cloud.`) && void disconnectCloudSync()}>
+            Sign out
+          </button>
+        </div>
+        <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+          Sign in with the same account and the same app (client) ID on your other devices: Windows, iPhone, iPad, Mac. Every chat is merged, never replaced. This works alongside iCloud: chats from iCloud are passed on to {CLOUD_NAMES[cloud.provider]} and back.
+        </p>
+      </div>
+    );
+  }
+
+  const start = async () => {
+    setBusy(true);
+    abort.current = new AbortController();
+    try {
+      await connectCloudSync({ provider, clientId, clientSecret: secret, tenant }, setCode, abort.current.signal);
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) toast(errText(e), "error");
+    } finally {
+      setBusy(false);
+      setCode(null);
+    }
+  };
+
+  return (
+    <div className="card">
+      <p className="hint" style={{ marginTop: 0 }}>
+        Keep chats in your own Google Drive or OneDrive and have them appear on every device, including Windows PCs, the same way iCloud sync works. You register a free app with Google or Microsoft once (about five minutes, see <b>Sync with Google Drive or OneDrive</b> in the README) and sign in with a code on each device.
+      </p>
+      <div className="seg" role="radiogroup" aria-label="Cloud drive" style={{ marginBottom: 10 }}>
+        {(["onedrive", "google"] as const).map((k) => (
+          <button key={k} role="radio" aria-checked={provider === k} className={provider === k ? "sel" : ""} onClick={() => setProvider(k)}>
+            {CLOUD_NAMES[k]}
+          </button>
+        ))}
+      </div>
+      <label className="field">
+        <span>{google ? "OAuth client ID (type: TVs and Limited Input devices)" : "Application (client) ID"}</span>
+        <input type="text" spellCheck={false} autoCapitalize="off" value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder={google ? "1234567890-abc….apps.googleusercontent.com" : "00000000-0000-0000-0000-000000000000"} aria-label="Client ID" />
+      </label>
+      {google ? (
+        <label className="field">
+          <span>Client secret</span>
+          <input type="password" spellCheck={false} value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="GOCSPX-…" aria-label="Client secret" />
+          <small className="hint">Google gives this type of client a secret; it is kept in this device's keychain with your sign-in.</small>
+        </label>
+      ) : (
+        <label className="field">
+          <span>Account type (optional)</span>
+          <select value={tenant} onChange={(e) => setTenant(e.target.value)} aria-label="Account type">
+            <option value="">Personal and work or school accounts</option>
+            <option value="consumers">Personal Microsoft accounts only</option>
+            <option value="organizations">Work or school accounts only</option>
+          </select>
+        </label>
+      )}
+      {code ? (
+        <div className="note" role="status">
+          <div style={{ marginBottom: 6 }}>
+            Open <b>{code.verification_url}</b> on any device and enter this code:
+          </div>
+          <div className="row wrap">
+            <code style={{ fontSize: 20, letterSpacing: 2, padding: "4px 10px" }} data-testid="device-code">{code.user_code}</code>
+            <button className="btn small" onClick={() => void navigator.clipboard?.writeText(code.user_code)}>Copy code</button>
+            <button className="btn small primary" onClick={() => void openExternal(code.verification_url_complete ?? code.verification_url)}>Open sign-in page</button>
+            <button className="btn small" onClick={() => abort.current?.abort()}>Cancel</button>
+          </div>
+          <div className="hint" style={{ marginTop: 6 }}>Waiting for you to finish signing in…</div>
+        </div>
+      ) : (
+        <button className="btn primary" disabled={busy || !clientId.trim() || (google && !secret.trim())} onClick={() => void start()}>
+          {busy ? "Starting…" : `Sign in to ${CLOUD_NAMES[provider]}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function SyncTab({ settings }: { settings: Settings }) {
   const sync = useApp((s) => s.sync);
   const [includeFiles, setIncludeFiles] = useState(true);
@@ -504,7 +752,11 @@ function SyncTab({ settings }: { settings: Settings }) {
             )}
           </>
         )}
-        {p.os === "web" && <div className="note">Sync needs the installed app. In a browser you can still export and import backups below.</div>}
+        {p.os === "web" && <div className="note">iCloud and folder sync need the installed app. Google Drive and OneDrive sync (below) and backups work here too.</div>}
+      </div>
+      <h4>Google Drive or OneDrive</h4>
+      <CloudSyncCard settings={settings} />
+      <div className="card">
         <Toggle checked={settings.sync.auto} onChange={(v) => void setSync({ auto: v })} label="Sync automatically" hint="On launch, after each reply and once a minute." />
         <div className="row wrap">
           <button className="btn" disabled={sync.state === "off" || sync.state === "syncing"} onClick={() => void syncNow()}>

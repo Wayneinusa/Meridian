@@ -1,5 +1,5 @@
 import { generateImages, generateVideo, pickDefaultMedia, type MediaInput } from "../providers/media";
-import { findModel } from "../providers/registry";
+import { allProviders, findModel } from "../providers/registry";
 import type { BlobRef, MediaOptions, ModelRef, Settings } from "../types";
 import type { Tool, ToolContext } from "./types";
 
@@ -7,13 +7,13 @@ import type { Tool, ToolContext } from "./types";
 export function mediaModelFor(settings: Settings, kind: "image" | "video"): ModelRef | undefined {
   const chosen = kind === "image" ? settings.imageModel : settings.videoModel;
   if (chosen && findModel(settings, chosen)) return chosen;
-  return pickDefaultMedia(settings.providers, kind);
+  return pickDefaultMedia(allProviders(settings), kind);
 }
 
 export function noMediaModelMessage(kind: "image" | "video"): string {
   return kind === "image"
-    ? "No image model is available. Add an API key for OpenAI, Google Gemini, xAI (Grok) or OpenRouter in Settings → Providers & keys; the app then picks an image model automatically (or choose one in Settings → Models)."
-    : "No video model is available. Add an API key for OpenAI (Sora), Google Gemini (Veo) or xAI (Grok Imagine) in Settings → Providers & keys; the app then picks a video model automatically (or choose one in Settings → Models).";
+    ? "No image backend is ready. Turn on Pollinations or AI Horde (free, no key) in Settings → Providers & keys, set up Cloudflare's free tier, or add a key for OpenAI, Google Gemini, xAI or OpenRouter."
+    : "No video backend is ready. For free video, get a free key at enter.pollinations.ai and paste it in Settings → Providers & keys → Pollinations. Keys for OpenAI (Sora), Google Gemini (Veo), xAI (Grok Imagine), fal.ai or Runway work too.";
 }
 
 export interface CreateMediaArgs {

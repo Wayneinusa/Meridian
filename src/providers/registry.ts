@@ -2,12 +2,44 @@ import type { ModelInfo, ModelRef, ProviderConfig, ProviderKind, Settings } from
 import { ANTHROPIC_DEFAULT_MODELS, anthropicAdapter } from "./anthropic";
 import { geminiAdapter } from "./gemini";
 import { classifyMediaId, openaiAdapter } from "./openai";
-import type { ProviderAdapter } from "./types";
+import { BACKENDS, backendModels, HORDE_DEFAULT_MODELS, isMediaOnly, POLLINATIONS_DEFAULT_MODELS } from "./backends";
+import { ProviderError, type ProviderAdapter } from "./types";
+
+/** Image / video services: they list models but do not chat. */
+const mediaAdapter: ProviderAdapter = {
+  listModels: (provider, apiKey) => backendModels(provider, apiKey),
+  async chat(req) {
+    throw new ProviderError(`${req.provider.name} makes images and video only. Choose a chat model for conversations.`);
+  },
+};
 
 export function adapterFor(kind: ProviderKind): ProviderAdapter {
   if (kind === "anthropic") return anthropicAdapter;
   if (kind === "gemini") return geminiAdapter;
+  if (isMediaOnly(kind) && kind !== "custom-media") return mediaAdapter;
   return openaiAdapter;
+}
+
+/** A new provider entry for one of the free / media services. */
+export function backendProvider(kind: ProviderKind, id = String(kind)): ProviderConfig {
+  const b = BACKENDS[kind]!;
+  const models = kind === "pollinations" ? POLLINATIONS_DEFAULT_MODELS : kind === "horde" ? HORDE_DEFAULT_MODELS : [];
+  return { id, kind, name: b.name, baseUrl: b.defaultBaseUrl, enabled: true, models: models.map((m) => ({ ...m })) };
+}
+
+// Image / video engines from installed plugins. They are not stored in
+// settings; the app registers them whenever the plugin list changes.
+let pluginProviders: ProviderConfig[] = [];
+export function setPluginProviders(list: ProviderConfig[]) {
+  pluginProviders = list;
+}
+export function getPluginProviders(): ProviderConfig[] {
+  return pluginProviders;
+}
+
+/** Providers from settings plus plugin engines. */
+export function allProviders(settings: Settings): ProviderConfig[] {
+  return pluginProviders.length ? [...settings.providers, ...pluginProviders] : settings.providers;
 }
 
 export function defaultProviders(): ProviderConfig[] {
@@ -16,6 +48,9 @@ export function defaultProviders(): ProviderConfig[] {
     { id: "openai", kind: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", enabled: true, models: [] },
     { id: "gemini", kind: "gemini", name: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", enabled: true, models: [] },
     { id: "xai", kind: "xai", name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1", enabled: true, models: [] },
+    // free image (and, with a free key, video) generation that works with no setup
+    backendProvider("pollinations"),
+    backendProvider("horde"),
   ];
 }
 
@@ -42,7 +77,7 @@ export const COMPATIBLE_PRESETS: { name: string; baseUrl: string; needsKey: bool
 
 export function findModel(settings: Settings, ref: ModelRef | undefined): { provider: ProviderConfig; model: ModelInfo } | null {
   if (!ref) return null;
-  const provider = settings.providers.find((p) => p.id === ref.providerId);
+  const provider = settings.providers.find((p) => p.id === ref.providerId) ?? pluginProviders.find((p) => p.id === ref.providerId);
   const model = provider?.models.find((m) => m.id === ref.modelId);
   return provider && model ? { provider, model } : null;
 }

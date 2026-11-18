@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from "react";
-import { useApp } from "../state/store";
+import { useProviders } from "./BackendPicker";
 import { Icon } from "./icons";
 
 export function Modal({ title, onClose, children, footer, narrow }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; narrow?: boolean }) {
@@ -25,7 +25,7 @@ export function Modal({ title, onClose, children, footer, narrow }: { title: str
 }
 
 export function ModelSelect({ value, onChange, empty, kind = "chat" }: { value?: { providerId: string; modelId: string }; onChange: (v?: { providerId: string; modelId: string }) => void; empty: string; kind?: "chat" | "image" | "video" }) {
-  const providers = useApp((s) => s.settings.providers);
+  const providers = useProviders();
   return (
     <select
       value={value ? `${value.providerId}::${value.modelId}` : ""}

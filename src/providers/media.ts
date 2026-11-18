@@ -9,19 +9,12 @@
 import { httpFetch, readError } from "../platform/http";
 import type { MediaOptions, ModelInfo, ProviderConfig } from "../types";
 import { base64ToBytes, bytesToBase64 } from "../util/bytes";
+import { backendImages, backendVideo, providerReady, VIDEO_DEADLINE_MS } from "./backends";
 import { trimSlash } from "./common";
+import { clampCount, dataUri, download, isImage, postJson as postJsonRaw, sleep, sniffImage, type MediaInput, type MediaOutput } from "./mediaUtil";
 import { ProviderError } from "./types";
 
-export interface MediaOutput {
-  bytes: Uint8Array;
-  mime: string;
-}
-
-export interface MediaInput {
-  bytes: Uint8Array;
-  mime: string;
-  name: string;
-}
+export { sniffImage, type MediaInput, type MediaOutput };
 
 interface Base {
   provider: ProviderConfig;
@@ -41,39 +34,18 @@ export interface VideoRequest extends Base {
   pollMs?: number;
 }
 
-const dataUri = (i: MediaInput) => `data:${i.mime};base64,${bytesToBase64(i.bytes)}`;
-const isImage = (i: MediaInput) => /^image\//.test(i.mime);
-
-export function sniffImage(head: Uint8Array): string {
-  if (head[0] === 0xff && head[1] === 0xd8) return "image/jpeg";
-  if (head[0] === 0x52 && head[1] === 0x49) return "image/webp";
-  if (head[0] === 0x47 && head[1] === 0x49) return "image/gif";
-  return "image/png";
+/** Image / video engines that plugins provide (registered by the app, so this module stays free of plugin code). */
+type PluginEngineRunner = (req: VideoRequest, kind: "image" | "video") => Promise<MediaOutput[]>;
+let pluginRunner: PluginEngineRunner | null = null;
+export function setPluginEngineRunner(fn: PluginEngineRunner) {
+  pluginRunner = fn;
 }
 
 function jsonHeaders(provider: ProviderConfig, apiKey: string): Record<string, string> {
   return { "Content-Type": "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}), ...(provider.headers ?? {}) };
 }
 
-async function postJson(url: string, headers: Record<string, string>, body: unknown, signal?: AbortSignal): Promise<any> {
-  const res = await httpFetch(url, { method: "POST", headers, body: JSON.stringify(body), signal });
-  if (!res.ok) throw new ProviderError(await readError(res), res.status);
-  return res.json();
-}
-
-async function download(url: string, signal?: AbortSignal, headers?: Record<string, string>): Promise<MediaOutput> {
-  if (url.startsWith("data:")) {
-    const m = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url);
-    if (!m) throw new ProviderError("The provider returned an unreadable data URL.");
-    const bytes = m[2] ? base64ToBytes(m[3]) : new TextEncoder().encode(decodeURIComponent(m[3]));
-    return { bytes, mime: m[1] || sniffImage(bytes) };
-  }
-  const res = await httpFetch(url, { signal, headers });
-  if (!res.ok) throw new ProviderError(`Could not download the result: ${await readError(res)}`, res.status);
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  const type = res.headers.get("content-type") ?? "";
-  return { bytes, mime: type && !type.includes("octet-stream") ? type.split(";")[0] : sniffImage(bytes) };
-}
+const postJson = (url: string, headers: Record<string, string>, body: unknown, signal?: AbortSignal) => postJsonRaw(url, headers, body, signal);
 
 /** Results in OpenAI's `{ data: [{ b64_json | url }] }` shape. */
 async function readImageList(json: any, signal?: AbortSignal): Promise<MediaOutput[]> {
@@ -90,7 +62,6 @@ async function readImageList(json: any, signal?: AbortSignal): Promise<MediaOutp
 
 const OPENAI_SIZE: Record<string, string> = { "1:1": "1024x1024", "16:9": "1536x1024", "3:2": "1536x1024", "4:3": "1536x1024", "9:16": "1024x1536", "2:3": "1024x1536", "3:4": "1024x1536" };
 const DALLE3_SIZE: Record<string, string> = { "1:1": "1024x1024", "16:9": "1792x1024", "3:2": "1792x1024", "4:3": "1792x1024", "9:16": "1024x1792", "2:3": "1024x1792", "3:4": "1024x1792" };
-const clampCount = (n?: number) => Math.min(Math.max(Math.round(n ?? 1), 1), 4);
 
 // ---------------------------------------------------------------- images
 
@@ -98,7 +69,9 @@ export async function generateImages(req: ImageRequest): Promise<MediaOutput[]> 
   const { provider, model } = req;
   const inputs = (req.inputs ?? []).filter(isImage);
   let out: MediaOutput[];
-  if (provider.kind === "anthropic") {
+  const viaBackend = provider.kind === "plugin" ? await runPlugin(req, "image") : await backendImages({ ...req, inputs });
+  if (viaBackend) out = viaBackend;
+  else if (provider.kind === "anthropic") {
     throw new ProviderError("Claude models do not create images. Choose an image model from OpenAI, Google, xAI (Grok) or OpenRouter.");
   } else if (provider.kind === "gemini") {
     out = /imagen/i.test(model.id) ? await imagen(req, inputs) : await geminiImage(req, inputs);
@@ -112,6 +85,13 @@ export async function generateImages(req: ImageRequest): Promise<MediaOutput[]> 
     out = await compatibleImages(req, inputs);
   }
   if (!out.length) throw new ProviderError("The model returned no image. The prompt may have been blocked by the provider's content filter.");
+  return out;
+}
+
+async function runPlugin(req: VideoRequest, kind: "image" | "video"): Promise<MediaOutput[]> {
+  if (!pluginRunner) throw new ProviderError("Plugin engines are not available here.");
+  const out = await pluginRunner(req, kind);
+  if (!out.length) throw new ProviderError(`The plugin returned no ${kind}.`);
   return out;
 }
 
@@ -247,20 +227,12 @@ async function compatibleImages(req: ImageRequest, inputs: MediaInput[]): Promis
 
 // ---------------------------------------------------------------- video
 
-const sleep = (ms: number, signal?: AbortSignal) =>
-  new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(t);
-      reject(new DOMException("Aborted", "AbortError"));
-    });
-  });
-
-const VIDEO_DEADLINE_MS = 30 * 60_000;
-
 export async function generateVideo(req: VideoRequest): Promise<MediaOutput> {
   const inputs = (req.inputs ?? []).filter(isImage);
+  if (req.provider.kind === "plugin") return asVideoOut((await runPlugin({ ...req, inputs }, "video"))[0]);
+  const viaBackend = await backendVideo({ ...req, inputs });
+  if (viaBackend) return viaBackend;
+  if (req.provider.videoApi === "xai") return xaiVideo(req, inputs[0]);
   switch (req.provider.kind) {
     case "anthropic":
       throw new ProviderError("Claude models do not create video. Choose a video model from OpenAI (Sora), Google (Veo) or xAI (Grok Imagine).");
@@ -271,6 +243,10 @@ export async function generateVideo(req: VideoRequest): Promise<MediaOutput> {
     default:
       return openaiVideo(req, inputs[0]);
   }
+}
+
+function asVideoOut(f: MediaOutput): MediaOutput {
+  return { bytes: f.bytes, mime: f.mime.startsWith("video/") ? f.mime : "video/mp4" };
 }
 
 async function veo(req: VideoRequest, image?: MediaInput): Promise<MediaOutput> {
@@ -382,15 +358,29 @@ async function openaiVideo(req: VideoRequest, image?: MediaInput): Promise<Media
 
 const IMAGE_PREFERENCE = [/grok-imagine-image/, /gpt-image-1\.5/, /gpt-image-1(?!-mini)/, /gpt-image/, /imagen-4/, /gemini-.*-image/, /imagen/, /dall-e-3/, /image/];
 const VIDEO_PREFERENCE = [/veo-3/, /sora-2-pro/, /sora-2/, /grok-imagine-video/, /veo/, /sora/, /video/];
+/** free services, best first; used when the user has not chosen a default */
+const FREE_ORDER = ["pollinations", "cloudflare", "horde"];
 
-/** The best available model of a kind, for when the user has not chosen one. */
+/**
+ * The model to use when the user has not chosen one: Pollinations first (free,
+ * no setup), then the other free services, then the best model from a provider
+ * the user has a key for.
+ */
 export function pickDefaultMedia(providers: ProviderConfig[], kind: "image" | "video"): { providerId: string; modelId: string } | undefined {
+  const fits = (m: ModelInfo) => m.kind === kind || (kind === "image" && m.caps.imageOutput);
+  for (const k of FREE_ORDER) {
+    for (const p of providers) {
+      if (p.kind !== k || !providerReady(p, kind)) continue;
+      const models = p.models.filter((m) => m.kind === kind);
+      // with a Pollinations key prefer a real model over the keyless classic one
+      const best = (p.hasKey ? models.find((m) => m.id !== "classic") : undefined) ?? models[0];
+      if (best) return { providerId: p.id, modelId: best.id };
+    }
+  }
   const candidates: { providerId: string; model: ModelInfo }[] = [];
   for (const p of providers) {
-    if (!p.enabled || (!p.hasKey && p.kind !== "openai-compatible")) continue;
-    for (const m of p.models) {
-      if (m.kind === kind || (kind === "image" && m.caps.imageOutput)) candidates.push({ providerId: p.id, model: m });
-    }
+    if (FREE_ORDER.includes(p.kind) || !providerReady(p, kind)) continue;
+    for (const m of p.models) if (fits(m)) candidates.push({ providerId: p.id, model: m });
   }
   for (const re of kind === "image" ? IMAGE_PREFERENCE : VIDEO_PREFERENCE) {
     const hit = candidates.find((c) => re.test(c.model.id));

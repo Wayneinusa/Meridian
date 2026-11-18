@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { pluginsFromFile, pluginsFromUrl, fromJson, type PluginDraft } from "../plugins/import";
 import { deleteItem, errText, galleryPlugins, installPlugin, saveItem, savePluginSetting, setPluginEnabled, toast, uninstallPlugin, updateSettings, useApp } from "../state/store";
-import type { Plugin } from "../types";
+import type { Plugin, PluginEngine } from "../types";
 import { Icon } from "./icons";
 import { Modal } from "./Modal";
 
@@ -12,8 +12,44 @@ function counts(p: PluginDraft | Plugin): string {
     p.commands.length && `${p.commands.length} command${p.commands.length > 1 ? "s" : ""}`,
     p.agents.length && `${p.agents.length} agent${p.agents.length > 1 ? "s" : ""}`,
     p.mcpServers.length && `${p.mcpServers.length} connector${p.mcpServers.length > 1 ? "s" : ""}`,
+    (p.engines?.length ?? 0) > 0 && `${p.engines!.length} image/video backend${p.engines!.length > 1 ? "s" : ""}`,
   ].filter(Boolean);
   return bits.join(" · ") || "empty";
+}
+
+/** Which of a plugin's tools also act as Image / Video backends. */
+function EnginesEditor({ p }: { p: Plugin }) {
+  const engines = p.engines ?? [];
+  const save = (next: PluginEngine[]) => void saveItem("plugins", { id: p.id, engines: next });
+  const free = p.tools.filter((t) => !engines.some((e) => e.tool === t.name));
+  if (!engines.length && !p.tools.length) return null;
+  return (
+    <div className="subcard" style={{ marginTop: 8 }}>
+      <div className="hint" style={{ marginBottom: 6 }}>
+        <b>Image / video backends.</b> These appear in the backend list in Image and Video mode, where you can make one the default.
+      </div>
+      {engines.map((e) => (
+        <div className="model-row" key={e.id}>
+          <span className="name">{e.name}</span>
+          <span className="badge">{e.kind}</span>
+          <span className="hint">{e.tool ? `tool ${e.tool}` : e.http ? "HTTP" : "code"}</span>
+          <button className="icon-btn" title={`Stop using ${e.name} as a backend`} onClick={() => save(engines.filter((x) => x.id !== e.id))}>
+            <Icon.x />
+          </button>
+        </div>
+      ))}
+      {free.length > 0 && (
+        <div className="row wrap" style={{ marginTop: 6 }}>
+          {free.slice(0, 8).map((t) => (
+            <span key={t.name} className="row" style={{ gap: 4 }}>
+              <button className="btn small" onClick={() => save([...engines, { id: `tool-${t.name}`, kind: "image", name: t.name.replace(/[_-]+/g, " "), tool: t.name }])}>Use {t.name} for images</button>
+              <button className="btn small" onClick={() => save([...engines, { id: `tool-${t.name}-video`, kind: "video", name: t.name.replace(/[_-]+/g, " "), tool: t.name }])}>…for video</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function PluginCard({ p }: { p: Plugin }) {
@@ -54,6 +90,7 @@ function PluginCard({ p }: { p: Plugin }) {
             </label>
           ))}
           {p.tools.length > 0 && <div className="hint"><b>Tools:</b> {p.tools.map((t) => t.name).join(", ")}</div>}
+          <EnginesEditor p={p} />
           {p.skills.length > 0 && <div className="hint"><b>Skills:</b> {p.skills.map((t) => t.name).join(", ")}</div>}
           {p.commands.length > 0 && <div className="hint"><b>Commands:</b> {p.commands.map((t) => `/${t.name}`).join(", ")}</div>}
           {p.agents.length > 0 && <div className="hint"><b>Agents:</b> {p.agents.map((t) => t.name).join(", ")}</div>}
@@ -134,7 +171,7 @@ export function PluginsTab() {
     <>
       <h3>Plugins</h3>
       <p>
-        Add abilities: tools that call web services, skills (packaged instructions the assistant loads when needed), slash commands, ready-made agents and connectors. Works with Claude plugins (a GitHub link or .zip), TypingMind plugins (.json) and skill files (SKILL.md).
+        Add abilities: tools that call web services, skills (packaged instructions the assistant loads when needed), slash commands, ready-made agents and connectors. Works with Claude plugins (a GitHub link or .zip), TypingMind plugins (.json, single- or multi-function), Meridian plugin JSON and skill files (SKILL.md). Plugins that make pictures or videos also become backends in Image and Video mode.
       </p>
       {plugins.map((p) => (
         <PluginCard key={p.id} p={p} />

@@ -3,6 +3,8 @@ import { httpFetch, readError } from "../platform/http";
 import { runInSandbox } from "../tools/sandbox";
 import type { Tool } from "../tools/types";
 import type { Plugin, PluginCommand, PluginSkill, PluginTool } from "../types";
+import { bytesToBase64 } from "../util/bytes";
+import { fillTemplate } from "../util/template";
 
 export const pluginSecretName = (pluginId: string, key: string) => `plugin.${pluginId}.${key}`;
 
@@ -19,31 +21,14 @@ export function missingSettings(p: Plugin, values: Record<string, string>): stri
   return p.settings.filter((s) => s.required && !values[s.key]).map((s) => s.label);
 }
 
-/** Fill {{arg}} and {{settings.KEY}}; `mode` decides how values are escaped. */
-export function fillTemplate(tpl: string, args: Record<string, unknown>, settings: Record<string, string>, mode: "url" | "json" | "text"): string {
-  // a quoted placeholder in JSON becomes a proper JSON value ("{{n}}" -> 5, "{{tags}}" -> ["a"])
-  if (mode === "json") {
-    tpl = tpl.replace(/"\{\{\s*([\w.]+)\s*\}\}"/g, (_m, key: string) => {
-      const v = key.startsWith("settings.") ? settings[key.slice(9)] : args[key];
-      return v === undefined ? "null" : JSON.stringify(v);
-    });
-  }
-  return tpl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, key: string) => {
-    const v = key.startsWith("settings.") ? settings[key.slice(9)] : args[key];
-    if (v === undefined || v === null) return "";
-    const s = typeof v === "string" ? v : JSON.stringify(v);
-    if (mode === "url") return encodeURIComponent(s);
-    if (mode === "json") return JSON.stringify(s).slice(1, -1);
-    return s;
-  });
-}
+export { fillTemplate };
 
 function pick(obj: unknown, path?: string): unknown {
   if (!path) return obj;
   return path.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), obj);
 }
 
-export async function runHttpTool(t: PluginTool, args: Record<string, unknown>, settings: Record<string, string>, signal?: AbortSignal): Promise<string> {
+export async function runHttpTool(t: PluginTool, args: Record<string, unknown>, settings: Record<string, string>, signal?: AbortSignal, media = false): Promise<string> {
   const h = t.http!;
   // only fill the query string with URL encoding; keep the scheme and host as written
   const url = fillTemplate(h.url, args, settings, "url");
@@ -53,6 +38,12 @@ export async function runHttpTool(t: PluginTool, args: Record<string, unknown>, 
   if (body && !Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) headers["Content-Type"] = "application/json";
   const res = await httpFetch(url, { method: h.method, headers, body: h.method === "GET" ? undefined : body, signal });
   if (!res.ok) throw new Error(await readError(res));
+  const type = (res.headers.get("content-type") ?? "").split(";")[0];
+  if (/^(image|video)\//.test(type)) {
+    // an image / video endpoint: hand back the file itself (engines) or say what came back (chat)
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return media ? `data:${type};base64,${bytesToBase64(bytes)}` : `(${type} file, ${bytes.length} bytes)`;
+  }
   const text = await res.text();
   try {
     const data = pick(JSON.parse(text), h.resultPath);
