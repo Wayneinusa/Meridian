@@ -16,7 +16,8 @@ permissions:
 
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push waits instead of cancelling a build that already has a Mac.
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -57,8 +58,10 @@ jobs:
 
   ios:
     name: iPhone and iPad
-    # macos-15 has a much larger pool of machines than macos-26, whose queue timed out
-    runs-on: macos-15
+    # GitHub's Apple-silicon Macs are capacity-constrained (jobs were cancelled after 15 minutes
+    # in the queue: "not acquired by Runner"). Intel Macs are a separate pool and still build
+    # the arm64 iPhone/iPad app.
+    runs-on: macos-15-intel
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
