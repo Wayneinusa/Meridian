@@ -1,0 +1,31 @@
+job: test
+result: success
+--- errors
+[2m Test Files [22m [1m[32m14 passed[39m[22m[90m (14)[39m
+[2m      Tests [22m [1m[32m102 passed[39m[22m[90m (102)[39m
+--- last lines
+> meridian@0.1.0 build
+> tsc --noEmit && vite build
+
+[36mvite v8.3.8 [32mbuilding client environment for production...[36m[39m
+transforming...
+✓ 868 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                      0.48 kB │ gzip:   0.29 kB
+dist/assets/pdf.worker.min-CIqJB0yW.mjs          1,271.91 kB
+dist/assets/index-CxVvrPM-.css                      26.62 kB │ gzip:   6.03 kB
+dist/assets/pdf.worker.min-UqOn5EDC.js               0.06 kB │ gzip:   0.08 kB
+dist/assets/__vite-browser-external-P94gsJKf.js      0.09 kB │ gzip:   0.10 kB
+dist/assets/node.browser-CyRjHMJZ.js                 0.26 kB │ gzip:   0.22 kB
+dist/assets/node.browser-DawLNKDB.js                 1.82 kB │ gzip:   0.70 kB
+dist/assets/dist-C-Qc3D-X.js                       282.17 kB │ gzip:  83.76 kB
+dist/assets/mammoth.browser-CKuYiyA3.js            298.50 kB │ gzip:  87.81 kB
+dist/assets/pptxgen.es-CGj86M91.js                 368.41 kB │ gzip: 123.24 kB
+dist/assets/pdf-YwugTw7Y.js                        444.23 kB │ gzip: 133.64 kB
+dist/assets/pdfmake-Bdekb4jP.js                    771.02 kB │ gzip: 289.14 kB
+dist/assets/vfs_fonts-BX8tiiXz.js                  854.70 kB │ gzip: 468.58 kB
+dist/assets/exceljs.min-j-DWzOve.js                929.38 kB │ gzip: 256.37 kB
+dist/assets/index-DD8fiEir.js                    1,423.55 kB │ gzip: 408.51 kB
+
+[32m✓ built in 735ms[39m
