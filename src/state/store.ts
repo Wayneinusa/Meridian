@@ -34,10 +34,12 @@ import { mediaModelFor, noMediaModelMessage } from "../tools/media";
 import type { PermissionPreview, Tool } from "../tools/types";
 import { killComputerUse, rearmComputerUse } from "../tools/computer-use";
 import { closeSession, onBrowserView, type BrowserView } from "../browser/session";
+import { addNote, forceVote, runConsortiumTurn, runControl, stopMember } from "./consortiumRun";
 import type {
   Agent,
   BlobRef,
   CloudSync,
+  ConsortiumConfig,
   CollectionName,
   CollectionTypes,
   Conversation,
@@ -117,7 +119,8 @@ export interface Draft {
   mediaModels?: { image?: ModelRef; video?: ModelRef };
   agentId?: string;
   projectId?: string;
-  mode?: "chat" | "research";
+  mode?: "chat" | "research" | "consortium";
+  consortium?: ConsortiumConfig;
   workFolder?: string;
 }
 
@@ -152,6 +155,8 @@ interface State {
   /** the assistant's browser in each chat that used it (for the browser panel) */
   browserViews: Record<string, BrowserView>;
   browserOpen: boolean;
+  /** what each consortium member is doing, per chat (while a consortium runs) */
+  consortium: Record<string, Record<string, string>>;
 }
 
 const emptyLib = (): LibState => ({ agents: [], projects: [], prompts: [], memories: [], plugins: [], automations: [] });
@@ -181,6 +186,7 @@ export const useApp = create<State>(() => ({
   artifactsOpen: false,
   browserViews: {},
   browserOpen: false,
+  consortium: {},
 }));
 
 const set = useApp.setState;
@@ -516,6 +522,7 @@ function ensureConversation(): Conversation {
   c.agentId = d.agentId;
   c.projectId = d.projectId;
   c.mode = d.mode;
+  c.consortium = d.consortium;
   c.workFolder = d.workFolder;
   if (!c.model) {
     const agent = library.get("agents", c.agentId);
@@ -599,6 +606,16 @@ export async function setChatMode(mode: "chat" | "image" | "video"): Promise<boo
 export const setChatMedia = (media: MediaOptions) => patchChat({ media });
 export const setChatParams = (params: ModelParams | undefined) => patchChat({ params: params && Object.keys(params).length ? params : undefined });
 export const setChatSystemPrompt = (text: string) => patchChat({ systemPrompt: text || undefined });
+/** Turn consortium mode on with this team, or off (undefined). */
+export const setConsortium = (cfg: ConsortiumConfig | undefined) => patchChat({ consortium: cfg, mode: cfg ? "consortium" : undefined }, { consortium: cfg, mode: cfg ? "consortium" : undefined });
+export const consortiumStop = (memberId: string) => {
+  const id = get().activeId;
+  if (id) stopMember(id, memberId);
+};
+export const consortiumForceVote = () => {
+  const id = get().activeId;
+  if (id) forceVote(id);
+};
 export const setResearchMode = (on: boolean) => patchChat({ mode: on ? "research" : undefined }, { mode: on ? "research" : undefined });
 export const setWorkFolder = (folder: string | undefined) => patchChat({ workFolder: folder });
 export const setChatAgent = (agentId: string | undefined) => patchChat({ agentId });
@@ -792,7 +809,19 @@ export async function send(text: string, attachments: Part[] = [], opts: { compa
   const trimmed = text.trim();
   if (!trimmed && !attachments.length) return;
   const c = ensureConversation();
-  if (get().busy[c.id] !== undefined) return;
+  if (get().busy[c.id] !== undefined) {
+    // while a consortium works, what the user types becomes an instruction for its members
+    if (c.mode === "consortium" && trimmed && runControl(c.id)) {
+      const at = nextMessageTime(c);
+      // shown inside the discussion thread, as the user's instruction
+      c.messages.push({ id: uid("m"), role: "user", createdAt: at, updatedAt: at, parts: [{ type: "text", text: trimmed }], member: { id: "user", name: "You", phase: "note", run: "" } });
+      addNote(c.id, trimmed);
+      touch(c);
+      render(c.id);
+      saveSoon(c.id, 500);
+    }
+    return;
+  }
   const now = nextMessageTime(c);
   const parts: Part[] = [...attachments];
   if (trimmed) parts.push({ type: "text", text: trimmed });
@@ -944,7 +973,17 @@ async function runAgent(convId: string) {
   setBusy(convId, "");
   const firstAnswer = c.messages.filter((m) => m.role === "assistant").length === 0;
   try {
-    await runTurn(host, c, { signal: abort.signal });
+    if (c.mode === "consortium" && c.consortium) {
+      set((s) => ({ consortium: { ...s.consortium, [convId]: Object.fromEntries(c.consortium!.members.map((m) => [m.id, "waiting"])) } }));
+      await runConsortiumTurn(c, abort.signal, {
+        host,
+        render: (x) => render(x.id),
+        saveSoon: (x) => saveSoon(x.id, 1500),
+        status: (id, memberId, status) => set((s) => ({ consortium: { ...s.consortium, [id]: { ...(s.consortium[id] ?? {}), [memberId]: status } } })),
+      });
+    } else {
+      await runTurn(host, c, { signal: abort.signal });
+    }
   } catch (e) {
     if (!isAbort(e)) toast(errText(e), "error");
   } finally {

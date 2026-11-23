@@ -178,6 +178,47 @@ export interface Message {
    * provider (Claude requires thinking blocks to come back unchanged).
    */
   raw?: { kind: ProviderKind; content: unknown };
+  /** a message from one member of a consortium (shown in the discussion thread) */
+  member?: MemberTag;
+}
+
+export type ConsortiumPhase = "plan" | "assign" | "work" | "review" | "draft" | "vote" | "final" | "note";
+
+export interface MemberTag {
+  /** member id, or "coordinator-…" for the coordinator speaking as such */
+  id: string;
+  name: string;
+  emoji?: string;
+  phase: ConsortiumPhase;
+  /** which consortium run this belongs to (one per task) */
+  run: string;
+  /** vote phase */
+  vote?: "agree" | "disagree";
+  round?: number;
+  /** final message: "consensus" | "majority" | "no agreement", with the count */
+  outcome?: string;
+}
+
+export interface ConsortiumMember {
+  id: string;
+  name: string;
+  /** what this member is for: "researcher", "skeptic who checks every claim", ... */
+  role: string;
+  emoji?: string;
+  /** its own model (cross-model consortium); the chat's model when unset */
+  model?: ModelRef;
+  /** a saved agent (its instructions, tools and knowledge come along) */
+  agentId?: string;
+}
+
+export interface ConsortiumConfig {
+  members: ConsortiumMember[];
+  /** who merges plans and writes drafts and the final answer */
+  coordinatorId: string;
+  /** vote rounds before disagreement is reported (1-5) */
+  rounds: number;
+  /** tool steps each member may take while working on its part */
+  workSteps: number;
 }
 
 export interface Conversation {
@@ -205,7 +246,9 @@ export interface Conversation {
   /** desktop: folder the assistant may work in for this chat */
   workFolder?: string;
   /** "research" runs a multi-step web research agent */
-  mode?: "chat" | "research";
+  mode?: "chat" | "research" | "consortium";
+  /** the team for consortium mode */
+  consortium?: ConsortiumConfig;
   /** earlier answers to a question: user message id -> versions (regenerate / compare keep them here) */
   alternates?: Record<string, TurnVersion[]>;
   /** the assistant's working plan (shown as a checklist) */

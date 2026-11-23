@@ -8,6 +8,7 @@ A multi-provider AI workspace for **iPhone, iPad and Windows** from one codebase
 |---|---|
 | **Models** | Claude (official SDK), OpenAI, Google Gemini, xAI Grok (API key **or Sign in with X**), and anything OpenAI-compatible: OpenRouter, Ollama, LM Studio, Groq, Mistral, DeepSeek, Perplexity, Together, Fireworks, Cerebras, Hugging Face, Featherless, Moonshot, Qwen, Nvidia NIM, Azure, Runpod Serverless, a Hostinger VPS, your own endpoint. Favourite models are listed first in the model menu. Each provider card has an optional **Model ID** field for models the provider does not list (such as cold models), with **Wake up**, which retries a tiny request until the model has loaded. |
 | **Images & video** | Chat / Image / Video switch in the composer, with a **backend button** next to it: pick the service and model for this chat, and **Make default** for images and for video separately. **Free**: Pollinations (no sign-up for images; a free key adds 50+ models and video), AI Horde (free community GPUs), Cloudflare Workers AI (free daily allowance). **With your key**: Grok Imagine, OpenAI (gpt-image, DALL·E, Sora), Google (Imagen, Gemini image models, Veo), OpenRouter, fal.ai (Flux, Kling, Wan, MiniMax…), Runway (Gen-4). **Custom**: any server, OpenAI-, xAI- or fal-style, or described by a request template. Plugins can add their own image or video engines. Aspect ratio, count, quality, length, resolution; **Edit** and **Animate** on any picture; chat models can also create pictures as a tool. |
+| **Consortium** | Several agents (2–6, any mix of models: Claude, Grok, GPT, Gemini, local) take one task together: they plan who does what, work in parallel with a shared scratchpad and questions to each other, review each other, and vote on a joint answer. The result is a consensus, a majority with the dissent shown, or the separate positions when they don't agree. The whole discussion is visible, and you can add instructions, stop an agent or force the vote. |
 | **Agents** | Assistants with their own instructions, model, tools, knowledge files, memory and conversation starters; eight templates. |
 | **Projects** | Chats grouped with shared instructions, knowledge files (given in full when small, searched with BM25 when large), a default agent and model, and on desktop a work folder the assistant may use. |
 | **Prompts** | A prompt library with `{{variables}}`; type `/` in the composer for prompts and plugin commands (`$ARGUMENTS` like Claude). |
@@ -33,11 +34,12 @@ Built and tested in a Linux container without provider API keys; the iOS and Win
 
 **Verified by running it**
 
-- `npm test`: 125 unit tests, including the browser tool driving a real Chromium (pages, forms, Enter-to-submit, tabs, screenshots, HTTP login prompts) and the approval rules for computer use and the browser. Merge, backup and sync of chats and library items; document writers and readers; parameters per provider; streaming and tool calls; image and video requests for xAI, OpenAI, Google and OpenRouter; cold-model wake-up; knowledge search; plugin import (Claude zip, marketplace, TypingMind, skills) and runtime; connector sign-in (discovery, registration, PKCE, refresh) and registry search; automation schedules; ChatGPT/Claude/TypingMind import; Pollinations (free slot waiting, keyed models, async video jobs), AI Horde, Cloudflare, fal.ai, Runway and custom templates; TypingMind multi-function import and plugin engines; Google Drive and OneDrive sync between two devices against fake servers.
+- `npm test`: 131 unit tests, including the consortium (consensus, revision after objections, majority with dissent, no agreement, stopping a member, forcing the vote, the user's instructions), including the browser tool driving a real Chromium (pages, forms, Enter-to-submit, tabs, screenshots, HTTP login prompts) and the approval rules for computer use and the browser. Merge, backup and sync of chats and library items; document writers and readers; parameters per provider; streaming and tool calls; image and video requests for xAI, OpenAI, Google and OpenRouter; cold-model wake-up; knowledge search; plugin import (Claude zip, marketplace, TypingMind, skills) and runtime; connector sign-in (discovery, registration, PKCE, refresh) and registry search; automation schedules; ChatGPT/Claude/TypingMind import; Pollinations (free slot waiting, keyed models, async video jobs), AI Horde, Cloudflare, fal.ai, Runway and custom templates; TypingMind multi-function import and plugin engines; Google Drive and OneDrive sync between two devices against fake servers.
 - `npm run e2e`: 62 browser checks of the core app with providers mocked at the network layer, including Grok image creation, editing and image-to-video.
 - `node e2e/features.cjs`: 35 browser checks of agents, projects with knowledge, prompts and slash commands, memory, gallery plugins (HTTP and sandboxed JavaScript), a directory connector, questions, plans, parallel sub-agents, research mode, versions, compare, automations, private chats, search, export, import and usage.
 - `node e2e/media-sync.cjs`: 23 browser checks: free images with no keys (Pollinations, waiting for the free slot), the backend picker and its defaults, AI Horde, Pollinations video with a free key, a TypingMind multi-function plugin used as an image backend, and OneDrive sign-in with a code plus two-way sync.
 - `node e2e/grok-banks.cjs`: 23 browser checks: the provider list and presets, a model menu wide enough for long names with favourites first, Grok with xAI's native web and X search (cited, shown in the chat), the Grok section, Sign in with X with a code and chats going to the subscription, a Capital One connection through SimpleFIN, and an approval answered inside the chat.
+- `node e2e/consortium.cjs`: 15 browser checks of a cross-model consortium (two Claude members and one GPT member): planning, assignments in the plan, parallel work with the shared scratchpad, reviews, a disagreement in round 1 resolved in round 2, consensus, and an instruction added mid-run.
 - `e2e/native.cjs`: checks against the **real desktop app** (Linux build) through WebDriver: native HTTP streaming, shell and file tools behind approval, key storage, document writers, the assistant's browser (the app launches Chromium and reads a page through its native socket), on-disk store and folder sync.
 
 **Built, but not run on a device**: the iPhone/iPad `.ipa` (built on GitHub's Intel Macs) and the Windows installer. Nothing iOS- or Windows-specific has been exercised by hand: Keychain, Files app, microphone, notifications, deep links, tray, Credential Manager.
@@ -85,6 +87,31 @@ Settings → Connectors → *Banking*: add **Wells Fargo**, **American Express**
 - **Plaid** (free within Plaid's limited plan, more setup): sign up at dashboard.plaid.com, get Production access for *Transactions*, paste the client ID and secret, press *Connect a bank* and sign in to the bank on Plaid's page.
 
 *Show my accounts* checks the connection. In chat, ask things like “what did I spend on restaurants at Capital One last month?”. The assistant asks before each read (*Allow once* / *Always allow*), unless you switch on *Run this connector's tools without asking*. The SimpleFIN address, Plaid keys and tokens stay in the keychain and are never synced.
+
+## Consortium: several agents on one task
+
+Press **Consortium** in the chat's header (next to *Research*):
+
+- **The team:** choose a suggested team (*Research team*, *Debate*, *Build & review*, or a *Cross-model team* that puts each member on a different provider's model), or build your own with 2–6 members. Each member has a name, a role and, optionally, its own model and one of your saved agents, whose instructions, tools and knowledge come along.
+- **The settings:** pick the coordinator (who merges plans, drafts and writes the answer), the number of vote rounds (1–5) and the steps each member may take while working. The panel estimates the number of model calls per task.
+- **Start:** press *Turn on consortium mode*. The message box now says *Give the consortium a task*.
+
+What happens, all of it shown in a collapsible **Consortium discussion** in the chat:
+
+1. **Planning:** each member proposes how to divide the task and which part it takes, seeing the earlier proposals.
+2. **Assignments:** the coordinator gives each member one part. The parts appear in the plan checklist and tick off as members finish.
+3. **Work:** members work on their parts at the same time, with their tools (files, web, connectors, the browser…), a **shared scratchpad**, and `ask_member` to ask a teammate a question (the question and answer show in the thread).
+4. **Reviews:** each member reviews the others' work and states its position.
+5. **Draft and votes:** the coordinator drafts a joint answer; everyone votes *agree* or *disagree* with a reason. Objections lead to a revised draft, up to the number of rounds you chose.
+6. **The answer** is labelled with the outcome: *Consensus (3 of 3)*, *Majority (2 of 3 agree)* with a *Dissent* section, or *No agreement*, with the positions side by side. The app never presents a forced agreement.
+
+While it runs, a bar above the message box shows every member and what it is doing (thinking, working, reviewing, voting, agrees, disagrees). From there you can:
+
+- **stop** one member with its ×
+- press **Force a vote** to skip the rest of the discussion
+- type into the message box to **add an instruction**: it appears in the thread and every member reads it before its next step.
+
+Everything stays on your device in the chat, like any other message. Later questions in the same chat see the consortium's answer, not its whole discussion.
 
 ## Computer use and the assistant's browser
 
@@ -274,7 +301,7 @@ iOS and iPadOS do not let any app run commands, control other apps or install so
 
 ```
 src/
-  agent/        engine.ts (the agent loop for chats, sub-agents, automations), prompt.ts
+  agent/        engine.ts (the agent loop for chats, sub-agents, automations), consortium.ts, prompt.ts
   providers/    anthropic.ts (official SDK), openai.ts, gemini.ts, xai.ts (Responses API, native search,
                 Sign in with X), media.ts (dispatch), backends.ts (Pollinations,
                 AI Horde, Cloudflare, fal.ai, Runway, custom templates), mediaUtil.ts, params.ts, wake.ts

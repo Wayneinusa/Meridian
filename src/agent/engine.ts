@@ -51,6 +51,8 @@ export interface TurnOptions {
   depth?: number;
   /** model override for this turn */
   model?: ModelRef;
+  /** extra tools for this turn only (consortium: shared scratchpad, asking another member) */
+  extraTools?: Tool[];
   onAssistant?: (id: string) => void;
 }
 
@@ -239,7 +241,7 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
         }
       }
       const hosted = !opts.noTools && hostedSearch(settings, c, agent, provider);
-      const tools = opts.noTools ? [] : await assembleTools(host, c, settings, model, agent, knowledge, full, depth, hosted);
+      const tools = opts.noTools ? [] : [...(await assembleTools(host, c, settings, model, agent, knowledge, full, depth, hosted)), ...(model.caps.tools ? (opts.extraTools ?? []) : [])];
       const memories = settings.memory && agent?.memory !== false ? host.library.list("memories").filter((m) => !m.projectId || m.projectId === c.projectId).slice(0, 200) : [];
       const system = buildSystemPrompt({
         settings,
@@ -257,7 +259,9 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
       const params = supportedParams({ ...resolveParams(settings, ref, c), ...(agent?.params ?? {}), ...(c.params ?? {}) }, provider.kind, model);
       // a task on the screen or in the browser takes many small steps: give it the computer-use budget
       if (!opts.maxSteps && tools.some((t) => t.spec.name === "computer" || t.spec.name === "browser")) maxSteps = Math.max(maxSteps, settings.computerUse?.maxSteps ?? 80);
-      let history = withRecentScreenshots(c.messages, settings.computerUse?.keepScreenshots ?? 3);
+      // a consortium's inner discussion stays out of later turns; its final answer is the reply
+      const visible = c.messages.some((m) => m.member && m.member.phase !== "final") ? c.messages.filter((m) => !m.member || m.member.phase === "final") : c.messages;
+      let history = withRecentScreenshots(visible, settings.computerUse?.keepScreenshots ?? 3);
       if (params.contextMessages && history.length > params.contextMessages) {
         let start = history.length - params.contextMessages;
         while (start > 0 && history[start].role !== "user") start--;

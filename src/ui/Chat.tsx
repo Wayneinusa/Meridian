@@ -4,6 +4,7 @@ import { pickFolder } from "../platform/files";
 import { exportChat, forkChat, keepPrivateChat, send, setChatAgent, setResearchMode, setView, setWorkFolder, useApp } from "../state/store";
 import type { Message } from "../types";
 import { ArtifactsPanel } from "./Artifacts";
+import { ConsortiumBar, ConsortiumChip, ConsortiumThread } from "./Consortium";
 import { BrowserPanel } from "./BrowserPanel";
 import { ChatPrompts, WaitingElsewhere } from "./Dialogs";
 import { Composer } from "./Composer";
@@ -116,7 +117,8 @@ function Plan() {
 function turns(messages: Message[]): { user?: Message; answers: Message[] }[] {
   const out: { user?: Message; answers: Message[] }[] = [];
   for (const m of messages) {
-    if (m.role === "user") out.push({ user: m, answers: [] });
+    // a consortium instruction typed mid-run belongs to that run's discussion
+    if (m.role === "user" && !m.member) out.push({ user: m, answers: [] });
     else if (out.length) out[out.length - 1].answers.push(m);
     else out.push({ answers: [m] });
   }
@@ -182,6 +184,7 @@ export function Chat() {
           <button className={`chip-btn ${research ? "on" : ""}`} title="Research mode: many searches, a cited report" onClick={() => setResearchMode(!research)}>
             <Icon.globe /> Research
           </button>
+          <ConsortiumChip />
           {active?.workFolder && <span className="chip-btn on" title={active.workFolder}><Icon.folder /> {active.workFolder.split(/[\\/]/).pop()}</span>}
         </div>
         <ModelPicker />
@@ -225,6 +228,7 @@ export function Chat() {
                   <button className={`chip-btn ${research ? "on" : ""}`} onClick={() => setResearchMode(!research)}>
                     <Icon.globe /> Research
                   </button>
+                  <ConsortiumChip />
                 </div>
                 <div className="starters">
                   {starters.slice(0, 4).map((s) => (
@@ -255,9 +259,19 @@ export function Chat() {
                       {g.user && compareOpen === g.user.id && (active?.alternates?.[g.user.id]?.length ?? 0) > 0 ? (
                         <CompareView userId={g.user.id} answers={g.answers} busy={busy && isLastTurn} />
                       ) : (
-                        g.answers.map((m, i) => (
-                          <MessageView key={m.id} message={m} isLast={isLastTurn && i === g.answers.length - 1} busy={busy} versionsFor={i === g.answers.length - 1 ? g.user?.id : undefined} />
-                        ))
+                        <>
+                          {g.answers.some((m) => m.member && m.member.phase !== "final") && (
+                            <ConsortiumThread messages={g.answers.filter((m) => m.member && m.member.phase !== "final")} running={busy && isLastTurn} />
+                          )}
+                          {g.answers
+                            .filter((m) => !m.member || m.member.phase === "final")
+                            .map((m, i, list) => (
+                              <div key={m.id}>
+                                {m.member?.outcome && <div className="consortium-outcome" data-testid="consortium-outcome">🤝 {m.member.outcome}</div>}
+                                <MessageView message={m} isLast={isLastTurn && i === list.length - 1} busy={busy} versionsFor={i === list.length - 1 ? g.user?.id : undefined} />
+                              </div>
+                            ))}
+                        </>
                       )}
                     </div>
                   );
@@ -266,6 +280,7 @@ export function Chat() {
               </div>
             </div>
           )}
+          <ConsortiumBar />
           <Composer />
         </div>
         {artifactsOpen && <ArtifactsPanel />}

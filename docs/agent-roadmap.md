@@ -2,7 +2,7 @@
 
 Status:
 
-- **Built:** 1 (computer use, foreground) and 2 (the browser agent).
+- **Built:** 1 (computer use, foreground), 2 (the browser agent) and ◆ (the consortium).
 - **Next, in order:** 3 to 9.
 
 Decisions from the owner:

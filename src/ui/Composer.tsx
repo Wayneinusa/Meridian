@@ -169,8 +169,15 @@ export function Composer() {
     }
   };
 
+  const consortiumOn = (active ? active.mode : draftState.mode) === "consortium";
   const submit = (override?: string) => {
     const body = expandSlash(override ?? text);
+    // a running consortium takes what you type as an instruction for its members
+    if (busy && consortiumOn && body.trim()) {
+      setText("");
+      void send(body);
+      return;
+    }
     if (busy || reading || (!body.trim() && !attachments.length)) return;
     const a = attachments;
     setText("");
@@ -322,7 +329,11 @@ export function Composer() {
                   ? attachments.some((a) => a.mime.startsWith("image/"))
                     ? `Describe how the image should move (${modelLabel(found.provider, found.model)})`
                     : `Describe the video to create (${modelLabel(found.provider, found.model)})`
-                  : `Message ${found.model.name}  ·  / for prompts`
+                  : consortiumOn
+                    ? busy
+                      ? "Add an instruction for the consortium (they read it before their next step)"
+                      : "Give the consortium a task"
+                    : `Message ${found.model.name}  ·  / for prompts`
           }
           value={text}
           aria-label="Message"
@@ -467,9 +478,16 @@ export function Composer() {
               <Icon.speaker />
             </button>
           ) : busy ? (
-            <button className="send stop" title="Stop" onClick={() => (voiceMode !== "off" ? stopVoice() : stop())}>
-              <Icon.stop />
-            </button>
+            <>
+              {consortiumOn && text.trim() && (
+                <button className="send" title="Add instruction" onClick={() => submit()}>
+                  <Icon.send />
+                </button>
+              )}
+              <button className="send stop" title="Stop" onClick={() => (voiceMode !== "off" ? stopVoice() : stop())}>
+                <Icon.stop />
+              </button>
+            </>
           ) : (
             <button className="send" title="Send" disabled={!!reading || (!text.trim() && !attachments.length)} onClick={() => submit()}>
               <Icon.send />
