@@ -38,6 +38,11 @@ function startMock() {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end('<!doctype html><title>Native test page</title><h1>Hello from the test page</h1><a href="/page2">Second page</a><form><input name="q" placeholder="Search"><button type="submit">Go</button></form>');
     }
+    // anything else the browser asks for (favicon...)
+    if (req.method === "GET" && !req.url.startsWith("/v1/")) {
+      res.writeHead(404);
+      return res.end();
+    }
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", async () => {
@@ -269,8 +274,17 @@ async function main() {
       fs.mkdirSync(path.join(appData, "browsers", "chromium"), { recursive: true });
       fs.writeFileSync(path.join(appData, "browsers", "chromium", "installed.json"), JSON.stringify({ version: "test", exe: chrome }));
       await sendMessage(`browse the test page at http://127.0.0.1:${MOCK_PORT}/page`);
+      const resultOf = () => {
+        for (const r of requests.slice().reverse()) {
+          const last = r.body.messages.at(-1);
+          const hit = Array.isArray(last.content) && last.content.find((b) => b.type === "tool_result" && b.tool_use_id === "toolu_browse");
+          if (hit) return hit;
+        }
+        return null;
+      };
+      for (let i = 0; i < 200 && !resultOf(); i++) await sleep(150);
       await idle();
-      const browseResult = requests[requests.length - 1].body.messages.at(-1).content.find((b) => b.type === "tool_result");
+      const browseResult = resultOf();
       const browseText = browseResult ? browseResult.content.map((c) => c.text).join("") : "";
       check("browser launched by the app and read the page through the native socket", !browseResult?.is_error && /Page: Native test page/.test(browseText) && /\[1\] link "Second page"/.test(browseText) && /\(submits form\)/.test(browseText), browseText.slice(0, 300));
       check("the page the user named opened without asking", true);

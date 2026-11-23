@@ -20,6 +20,8 @@ const TOOL_LABELS: Record<string, string> = {
   fetch_url: "Fetch page",
   web_search: "Web search",
   x_search: "X search",
+  browser: "Browser",
+  computer: "Computer",
   bank_list_accounts: "Bank accounts",
   bank_transactions: "Bank transactions",
   web_fetch: "Read page",
