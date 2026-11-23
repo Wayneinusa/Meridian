@@ -4,6 +4,7 @@ import { pickFolder } from "../platform/files";
 import { exportChat, forkChat, keepPrivateChat, send, setChatAgent, setResearchMode, setView, setWorkFolder, useApp } from "../state/store";
 import type { Message } from "../types";
 import { ArtifactsPanel } from "./Artifacts";
+import { ChatPrompts, WaitingElsewhere } from "./Dialogs";
 import { Composer } from "./Composer";
 import { Icon } from "./icons";
 import { CompareView, MessageView } from "./MessageView";
@@ -158,6 +159,7 @@ export function Chat() {
           {active && <button onClick={() => void keepPrivateChat()}>Keep it</button>}
         </div>
       )}
+      <WaitingElsewhere convId={active?.id ?? null} />
       <header className="chat-header">
         {!sidebarOpen && (
           <button className="icon-btn" title="Show chats" onClick={() => useApp.setState({ sidebarOpen: true })}>
@@ -252,6 +254,7 @@ export function Chat() {
                     </div>
                   );
                 })}
+                <ChatPrompts convId={active?.id ?? null} />
               </div>
             </div>
           )}

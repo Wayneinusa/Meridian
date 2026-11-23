@@ -13,12 +13,17 @@ export interface CatalogEntry {
   transport: "http" | "sse" | "native";
   /** oauth: Sign in; token: paste a key; none: open */
   auth: "oauth" | "token" | "none";
-  category: "Productivity" | "Communication" | "Development" | "Design" | "Data & docs" | "Payments" | "Sales & support" | "Knowledge";
+  category: "Productivity" | "Communication" | "Development" | "Design" | "Data & docs" | "Payments" | "Banking" | "Sales & support" | "Knowledge";
   checked?: boolean;
   note?: string;
 }
 
 export const CATALOG: CatalogEntry[] = [
+  // banks: read-only, through SimpleFIN Bridge or Plaid (see connectors/banks.ts)
+  { id: "wellsfargo", name: "Wells Fargo", emoji: "🏦", description: "Checking, savings and credit card accounts: balances and transactions. Read-only.", transport: "native", auth: "token", category: "Banking", note: "Connects through SimpleFIN Bridge or Plaid; you sign in to the bank on their page." },
+  { id: "amex", name: "American Express", emoji: "💳", description: "Card balances and transactions. Read-only.", transport: "native", auth: "token", category: "Banking", note: "Connects through SimpleFIN Bridge or Plaid; you sign in to the bank on their page." },
+  { id: "capitalone", name: "Capital One", emoji: "🏛️", description: "Card, checking and savings balances and transactions. Read-only.", transport: "native", auth: "token", category: "Banking", note: "Connects through SimpleFIN Bridge or Plaid; you sign in to the bank on their page." },
+  { id: "anybank", name: "Any bank (all accounts)", emoji: "💰", description: "Every account you linked in SimpleFIN or Plaid: Chase, Bank of America, Citi, credit unions and thousands more. Read-only.", transport: "native", auth: "token", category: "Banking" },
   { id: "google", name: "Google Workspace", emoji: "📧", description: "Gmail, Google Calendar and Google Drive: search and read mail, draft and send, see and create events, find and read files.", transport: "native", auth: "oauth", category: "Productivity", note: "Uses your own Google Cloud OAuth client (Settings shows how)." },
   { id: "microsoft", name: "Microsoft 365", emoji: "📨", description: "Outlook mail and calendar, OneDrive files.", transport: "native", auth: "oauth", category: "Productivity", note: "Uses your own Microsoft Entra app registration (Settings shows how)." },
   { id: "notion", name: "Notion", emoji: "📝", description: "Search, read, create and update pages and databases.", url: "https://mcp.notion.com/mcp", transport: "http", auth: "oauth", category: "Data & docs", checked: true },

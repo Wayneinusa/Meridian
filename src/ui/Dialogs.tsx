@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { loadBlob, useApp } from "../state/store";
+import { useEffect, useRef, useState } from "react";
+import { loadBlob, openChat, useApp, type PermissionRequest, type QuestionRequest } from "../state/store";
 import { formatBytes, utf8 } from "../util/bytes";
 import { Icon } from "./icons";
 import { saveBlob } from "./MessageView";
@@ -22,34 +22,121 @@ const RISK_NOTE: Record<string, string> = {
   web: "This contacts a web address that you did not type yourself.",
 };
 
-export function PermissionDialog() {
-  const req = useApp((s) => s.permission);
-  if (!req) return null;
+/** An approval request, shown inside the chat (not as a popup), with every choice visible. */
+export function PermissionCard({ req }: { req: PermissionRequest }) {
   const showDetail = req.detail !== "{}" && !req.summary.includes(req.detail);
   return (
-    <div className="overlay" role="alertdialog" aria-modal="true" aria-labelledby="perm-title">
-      <div className="modal narrow">
-        <div className="modal-head">
-          <h2 id="perm-title">Allow: {req.title}?</h2>
-        </div>
-        <div className="modal-body">
-          <div className="perm-cmd">{req.summary}</div>
-          {showDetail && (
-            <details>
-              <summary className="muted" style={{ cursor: "pointer", fontSize: 13 }}>Full details</summary>
-              <div className="perm-cmd">{req.detail}</div>
-            </details>
-          )}
-          <p className="hint" style={{ margin: "8px 0 0" }}>{RISK_NOTE[req.group] ?? "The assistant wants to run this tool."}</p>
-        </div>
-        <div className="modal-foot">
-          <button className="btn" onClick={() => req.resolve("deny")}>Don't allow</button>
-          <button className="btn" onClick={() => req.resolve("always")} title={`Stop asking for ${req.title}. You can undo this in Settings → Tools.`}>
-            Always allow “{req.title}”
-          </button>
-          <button className="btn primary" autoFocus onClick={() => req.resolve("once")}>Allow once</button>
-        </div>
+    <div className="perm-card" role="group" aria-label={`Allow ${req.title}?`}>
+      <div className="perm-head">
+        <Icon.alert />
+        <b>Allow {req.title}?</b>
       </div>
+      <div className="perm-cmd">{req.summary}</div>
+      {showDetail && (
+        <details>
+          <summary className="muted" style={{ cursor: "pointer", fontSize: 13 }}>Full details</summary>
+          <div className="perm-cmd">{req.detail}</div>
+        </details>
+      )}
+      <p className="hint" style={{ margin: "6px 0 10px" }}>{RISK_NOTE[req.group] ?? "The assistant wants to run this tool."}</p>
+      <div className="row wrap perm-actions">
+        <button className="btn primary" autoFocus onClick={() => req.resolve("once")}>Allow once</button>
+        <button className="btn" onClick={() => req.resolve("always")} title={`Stop asking for ${req.title}. You can undo this in Settings → Tools.`}>
+          Always allow “{req.title}”
+        </button>
+        <button className="btn" onClick={() => req.resolve("deny")}>Don't allow</button>
+      </div>
+    </div>
+  );
+}
+
+/** A question the assistant asked, answered right in the chat. */
+export function QuestionCard({ q }: { q: QuestionRequest }) {
+  const [picked, setPicked] = useState<string[]>([]);
+  const [other, setOther] = useState("");
+  const submit = (answer: string) => answer.trim() && q.resolve(answer.trim());
+  return (
+    <div className="question-card" role="group" aria-label={q.question}>
+      <div className="perm-head">
+        <Icon.chat />
+        <b>{q.question}</b>
+      </div>
+      {q.options.length > 0 && (
+        <div className="question-opts">
+          {q.options.map((o) =>
+            q.multiple ? (
+              <label key={o} className="switch">
+                <input type="checkbox" checked={picked.includes(o)} onChange={(e) => setPicked(e.target.checked ? [...picked, o] : picked.filter((x) => x !== o))} />
+                <span>{o}</span>
+              </label>
+            ) : (
+              <button key={o} className="btn" onClick={() => submit(o)}>{o}</button>
+            ),
+          )}
+        </div>
+      )}
+      <div className="row" style={{ marginTop: 10, alignItems: "flex-end" }}>
+        <textarea
+          rows={1}
+          className="grow"
+          placeholder={q.options.length ? "Or answer in your own words" : "Your answer"}
+          aria-label="Your answer"
+          value={other}
+          onChange={(e) => setOther(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit([...picked, other.trim()].filter(Boolean).join("; "));
+            }
+          }}
+          autoFocus={!q.options.length}
+        />
+        <button className="btn primary" disabled={!other.trim() && !(q.multiple && picked.length)} onClick={() => submit([...picked, other.trim()].filter(Boolean).join("; "))}>
+          Answer
+        </button>
+        <button className="btn" onClick={() => q.resolve(null)}>Skip</button>
+      </div>
+    </div>
+  );
+}
+
+/** Everything waiting for the user in this chat, at the end of the conversation. */
+export function ChatPrompts({ convId }: { convId: string | null }) {
+  const perms = useApp((s) => s.permissions);
+  const questions = useApp((s) => s.questions);
+  const mine = perms.filter((p) => p.convId === convId);
+  const myQs = questions.filter((q) => q.convId === convId);
+  const box = useRef<HTMLDivElement>(null);
+  const key = [...mine, ...myQs].map((r) => r.id).join(",");
+  useEffect(() => {
+    // bring a new request into view, like the end of the conversation
+    if (key) box.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [key]);
+  if (!mine.length && !myQs.length) return null;
+  return (
+    <div className="chat-prompts" ref={box}>
+      {mine.map((p) => (
+        <PermissionCard key={p.id} req={p} />
+      ))}
+      {myQs.map((q) => (
+        <QuestionCard key={q.id} q={q} />
+      ))}
+    </div>
+  );
+}
+
+/** Another chat (or an automation) is waiting for an answer: offer to go there. */
+export function WaitingElsewhere({ convId }: { convId: string | null }) {
+  const perms = useApp((s) => s.permissions);
+  const questions = useApp((s) => s.questions);
+  const metas = useApp((s) => s.metas);
+  const other = [...perms, ...questions].find((r) => r.convId !== convId);
+  if (!other) return null;
+  const title = metas.find((m) => m.id === other.convId)?.title ?? "Another chat";
+  return (
+    <div className="private-banner waiting-banner" role="status">
+      “{title}” is waiting for your answer.{" "}
+      <button onClick={() => void openChat(other.convId)}>Open it</button>
     </div>
   );
 }
@@ -126,51 +213,4 @@ export function PreviewDialog() {
   );
 }
 
-export function QuestionDialog() {
-  const q = useApp((s) => s.question);
-  const [picked, setPicked] = useState<string[]>([]);
-  const [other, setOther] = useState("");
-  useEffect(() => {
-    setPicked([]);
-    setOther("");
-  }, [q?.id]);
-  if (!q) return null;
-  const submit = (answer: string) => answer.trim() && q.resolve(answer.trim());
-  return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="q-title">
-      <div className="modal narrow">
-        <div className="modal-head">
-          <h2 id="q-title">{q.question}</h2>
-        </div>
-        <div className="modal-body">
-          <div className="question-opts">
-            {q.options.map((o) =>
-              q.multiple ? (
-                <label key={o} className="switch">
-                  <input type="checkbox" checked={picked.includes(o)} onChange={(e) => setPicked(e.target.checked ? [...picked, o] : picked.filter((x) => x !== o))} />
-                  <span>{o}</span>
-                </label>
-              ) : (
-                <button key={o} className="btn" onClick={() => submit(o)}>{o}</button>
-              ),
-            )}
-          </div>
-          <label className="field" style={{ marginTop: 12 }}>
-            <span>{q.options.length ? "Or answer in your own words" : "Your answer"}</span>
-            <textarea rows={2} value={other} onChange={(e) => setOther(e.target.value)} autoFocus={!q.options.length} />
-          </label>
-        </div>
-        <div className="modal-foot">
-          <button className="btn" onClick={() => q.resolve(null)}>Skip</button>
-          <button
-            className="btn primary"
-            disabled={!other.trim() && !(q.multiple && picked.length)}
-            onClick={() => submit([...picked, other.trim()].filter(Boolean).join("; "))}
-          >
-            Answer
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+

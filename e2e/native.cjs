@@ -151,7 +151,7 @@ async function sendMessage(text) {
   await sleep(80);
   await click('button[title="Send"]');
 }
-const idle = () => waitFor(function () { return !document.querySelector('button[title="Stop"]') && !document.querySelector('[role="alertdialog"]'); }, [], 40000, "idle");
+const idle = () => waitFor(function () { return !document.querySelector('button[title="Stop"]') && !document.querySelector('.perm-card'); }, [], 40000, "idle");
 
 async function launch() {
   session = (await wd("POST", "/session", { capabilities: { alwaysMatch: { browserName: "wry", "tauri:options": { application: APP } } } })).sessionId;
@@ -219,11 +219,11 @@ async function main() {
 
     console.log("shell command with approval");
     await sendMessage("please run a command");
-    await waitFor(function () { return !!document.querySelector('[role="alertdialog"]'); }, [], 15000, "permission dialog");
-    const prompt = await js(function () { return document.querySelector('[role="alertdialog"] .perm-cmd').textContent; });
+    await waitFor(function () { return !!document.querySelector('.perm-card'); }, [], 15000, "permission dialog");
+    const prompt = await js(function () { return document.querySelector('.perm-card .perm-cmd').textContent; });
     check("approval shows the exact command", prompt.includes("echo meridian-native-ok && uname -s"), prompt);
     await shot("21-native-permission");
-    await click('[role="alertdialog"] button', "Allow once");
+    await click('.perm-card button', "Allow once");
     await idle();
     const cmdResult = requests[requests.length - 1].body.messages.at(-1).content[0];
     const cmdText = cmdResult.content.map((c) => c.text).join("");
@@ -231,9 +231,9 @@ async function main() {
 
     console.log("file write with approval");
     await sendMessage("now write a file");
-    await waitFor(function () { return !!document.querySelector('[role="alertdialog"]'); }, [], 15000, "permission dialog 2");
+    await waitFor(function () { return !!document.querySelector('.perm-card'); }, [], 15000, "permission dialog 2");
     check("nothing written before approval", !fs.existsSync(WORK_FILE));
-    await click('[role="alertdialog"] button', "Allow once");
+    await click('.perm-card button', "Allow once");
     await idle();
     check("file written on disk with the right content", fs.existsSync(WORK_FILE) && fs.readFileSync(WORK_FILE, "utf8") === "written natively ✓");
     await waitFor(function () { return document.querySelectorAll(".toast").length === 0; }, [], 10000, "notifications to clear");

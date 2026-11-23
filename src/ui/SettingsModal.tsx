@@ -5,7 +5,7 @@ import { deleteSecret, mcpTokenName, setSecret } from "../platform/secrets";
 import { BACKENDS, providerReady } from "../providers/backends";
 import { backendProvider, COMPATIBLE_PRESETS, manualModel } from "../providers/registry";
 import { openExternal } from "../platform/files";
-import { addManualModel, cancelWake, connectCloudSync, disconnectCloudSync, exportBackupFile, importBackupFile, refreshModels, removeModel, saveProviderKey, syncNow, toast, updateSettings, useApp, wakeUp } from "../state/store";
+import { addManualModel, cancelWake, connectCloudSync, signInGrok, signOutGrok, disconnectCloudSync, exportBackupFile, importBackupFile, refreshModels, removeModel, saveProviderKey, syncNow, toast, updateSettings, useApp, wakeUp } from "../state/store";
 import { mcpManager } from "../tools/mcp";
 import { CLOUD_NAMES } from "../storage/cloudkv";
 import type { DeviceCode } from "../connectors/oauth";
@@ -43,6 +43,59 @@ function Toggle({ checked, onChange, label, hint, disabled }: { checked: boolean
 }
 
 // ---------- providers ----------
+
+/** Grok: "Sign in with X" next to the API key. */
+function XSignIn({ provider }: { provider: ProviderConfig }) {
+  const [code, setCode] = useState<DeviceCode | null>(null);
+  const [busy, setBusy] = useState(false);
+  const abort = useRef<AbortController | null>(null);
+  const desktop = platform().desktop;
+  const go = async (mode: "browser" | "device") => {
+    setBusy(true);
+    abort.current = new AbortController();
+    try {
+      await signInGrok(provider.id, mode, setCode, abort.current.signal);
+      toast("Signed in with X. Grok now uses your subscription.", "ok");
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) toast(`Sign in with X: ${errText(e)}`, "error");
+    } finally {
+      setBusy(false);
+      setCode(null);
+    }
+  };
+  return (
+    <div className="subcard" data-testid="x-signin">
+      <div className="row" style={{ marginBottom: 6 }}>
+        <b className="grow">Method 2: Sign in with X</b>
+        {provider.signedIn && <span className="badge ok">signed in{provider.signedInAs ? ` as ${provider.signedInAs}` : ""}</span>}
+      </div>
+      <p className="hint" style={{ margin: "0 0 8px" }}>
+        Use Grok with your SuperGrok or X Premium subscription instead of a metered key. Sign-in happens on xAI's page (auth.x.ai, which may call it “Grok Build”); Meridian only keeps the tokens, in this
+        device's keychain. When both are set up, the sign-in is used.
+      </p>
+      {code ? (
+        <div className="note" role="status">
+          Open <b>{code.verification_url}</b> and enter <code data-testid="x-device-code" style={{ fontSize: 17, letterSpacing: 1.5 }}>{code.user_code}</code>{" "}
+          <button className="btn small" onClick={() => void openExternal(code.verification_url_complete ?? code.verification_url)}>Open page</button>{" "}
+          <button className="btn small" onClick={() => abort.current?.abort()}>Cancel</button>
+        </div>
+      ) : provider.signedIn ? (
+        <button className="btn small" onClick={() => void signOutGrok(provider.id).then(() => toast("Signed out of X.", "ok"))}>Sign out</button>
+      ) : (
+        <div className="row wrap">
+          {desktop && (
+            <button className="btn primary" disabled={busy} onClick={() => void go("browser")}>
+              {busy ? "Waiting for the browser…" : "Sign in with X"}
+            </button>
+          )}
+          <button className={`btn ${desktop ? "" : "primary"}`} disabled={busy} onClick={() => void go("device")}>
+            {desktop ? "Use a code instead" : "Sign in with X (code)"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ProviderCard({ provider }: { provider: ProviderConfig }) {
   const [key, setKey] = useState("");
@@ -105,7 +158,13 @@ function ProviderCard({ provider }: { provider: ProviderConfig }) {
       <div className="row" style={{ marginBottom: 10 }}>
         <h4 className="grow">{provider.name}</h4>
         {media && <span className={`badge ${media.pricing === "free" ? "ok" : ""}`}>{media.pricing === "free" ? "Free" : media.pricing === "free-credits" ? "Free daily allowance" : media.pricing === "custom" ? "Custom" : media.pricing === "trial" ? "Pay per use" : "Paid"}</span>}
-        {media ? (
+        {provider.kind === "xai" ? (
+          <>
+            {provider.signedIn && <span className="badge ok">Signed in with X</span>}
+            {provider.hasKey && <span className="badge ok">API key configured</span>}
+            {!provider.signedIn && !provider.hasKey && <span className="badge">needs a key or sign-in</span>}
+          </>
+        ) : media ? (
           <span className={`badge ${ready ? "ok" : ""}`}>{!provider.enabled ? "off" : ready ? (provider.hasKey ? "ready · key saved" : "ready · no key needed") : "needs setup"}</span>
         ) : (
           <span className={`badge ${provider.hasKey ? "ok" : ""}`}>{provider.hasKey ? "key saved" : provider.kind === "openai-compatible" ? "no key" : "needs a key"}</span>
@@ -146,8 +205,9 @@ function ProviderCard({ provider }: { provider: ProviderConfig }) {
           <input type="url" defaultValue={provider.baseUrl} spellCheck={false} placeholder={provider.kind === "custom-media" ? "https://your-server/v1" : undefined} onBlur={(e) => e.target.value !== provider.baseUrl && void patch({ baseUrl: e.target.value.trim() })} />
         </label>
       )}
+      {provider.kind === "xai" && <XSignIn provider={provider} />}
       <label className="field">
-        <span>{media?.keyLabel ?? "API key"}</span>
+        <span>{provider.kind === "xai" ? "Method 1: API key (console.x.ai, billed per use)" : (media?.keyLabel ?? "API key")}</span>
         <div className="row">
           <input
             type="password"
@@ -335,6 +395,33 @@ function ProvidersTab({ settings }: { settings: Settings }) {
         Meridian talks to model providers directly with your own API keys. Keys are stored in {where} on this device only. They are never put in chats, sync folders or backups.
       </p>
       {p.os === "web" && <div className="note warn" style={{ marginBottom: 12 }}>You are running in a browser, where keys can only be kept in browser storage. Use the installed app for keychain storage.</div>}
+      <div className="card">
+        <h4 style={{ marginBottom: 8 }}>Add another provider</h4>
+        <p className="hint" style={{ marginBottom: 8 }}>Any service or local server with an OpenAI-compatible API.</p>
+        <div className="row">
+          <select value={preset} onChange={(e) => setPreset(e.target.value)} aria-label="Provider preset">
+            <option value="">Choose…</option>
+            {COMPATIBLE_PRESETS.map((c) => (
+              <option key={c.name} value={c.name}>{c.name}</option>
+            ))}
+          </select>
+          <button
+            className="btn"
+            disabled={!preset}
+            onClick={() => {
+              const c = COMPATIBLE_PRESETS.find((x) => x.name === preset)!;
+              void updateSettings((s) => ({
+                providers: [...s.providers, { id: uid("p"), kind: "openai-compatible", name: c.name.replace(" (local)", ""), baseUrl: c.baseUrl, enabled: true, models: [] }],
+              }));
+              setPreset("");
+              const placeholder = /YOUR-[A-Z-]+|ENDPOINT_ID/.exec(c.baseUrl)?.[0];
+              toast(placeholder ? `${c.name} added at the end of the list. In its API endpoint, replace ${placeholder} with your own value.` : `${c.name} added at the end of the list.`, "ok");
+            }}
+          >
+            Add
+          </button>
+        </div>
+      </div>
       <h3 style={{ marginTop: 18 }}>Free image & video</h3>
       <p>
         Pollinations and AI Horde work with no sign-up. Pollinations makes video with a free key, Cloudflare has a free daily allowance, and fal.ai, Runway or your own server can be added too. Choose
@@ -365,31 +452,6 @@ function ProvidersTab({ settings }: { settings: Settings }) {
       {settings.providers.filter((pr) => !(pr.kind in BACKENDS)).map((pr) => (
         <ProviderCard key={pr.id} provider={pr} />
       ))}
-      <div className="card">
-        <h4 style={{ marginBottom: 8 }}>Add another provider</h4>
-        <p className="hint" style={{ marginBottom: 8 }}>Any service or local server with an OpenAI-compatible API.</p>
-        <div className="row">
-          <select value={preset} onChange={(e) => setPreset(e.target.value)} aria-label="Provider preset">
-            <option value="">Choose…</option>
-            {COMPATIBLE_PRESETS.map((c) => (
-              <option key={c.name} value={c.name}>{c.name}</option>
-            ))}
-          </select>
-          <button
-            className="btn"
-            disabled={!preset}
-            onClick={() => {
-              const c = COMPATIBLE_PRESETS.find((x) => x.name === preset)!;
-              void updateSettings((s) => ({
-                providers: [...s.providers, { id: uid("p"), kind: "openai-compatible", name: c.name.replace(" (local)", ""), baseUrl: c.baseUrl, enabled: true, models: [] }],
-              }));
-              setPreset("");
-            }}
-          >
-            Add
-          </button>
-        </div>
-      </div>
     </>
   );
 }
@@ -521,7 +583,7 @@ function ToolsTab({ settings }: { settings: Settings }) {
         <Toggle checked={settings.tools.files} onChange={(v) => void setTool("files", v)} label="Create files" hint="Excel workbooks, PDFs, Word documents, PowerPoint decks and any text or code file. Made on this device." />
         <Toggle checked={settings.tools.media} onChange={(v) => void setTool("media", v)} label="Generate images and video" hint="Uses the image and video models chosen under Models." />
         <Toggle checked={settings.tools.web} onChange={(v) => void setTool("web", v)} label="Web access" hint="Read web pages. Addresses you did not type yourself are confirmed first." />
-        <Toggle checked={settings.webSearch} disabled={!settings.tools.web} onChange={(v) => void updateSettings({ webSearch: v })} label="Provider web search" hint="Let Claude models use Anthropic's hosted web search and fetch (billed by Anthropic per search)." />
+        <Toggle checked={settings.webSearch} disabled={!settings.tools.web} onChange={(v) => void updateSettings({ webSearch: v })} label="Prefer native provider search when available (Claude, Grok)" hint="Claude uses Anthropic's web search and fetch; Grok uses xAI's web search and X search. Both cite their sources and are billed by the provider. Off: every model uses Meridian's web search below." />
         <Toggle checked={settings.tools.connectors} onChange={(v) => void setTool("connectors", v)} label="Connectors" hint="Tools from the MCP servers on the Connectors tab." />
       </div>
 
@@ -863,7 +925,7 @@ export function SettingsModal() {
   const settings = useApp((s) => s.settings);
   const close = () => useApp.setState({ settingsTab: null });
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !useApp.getState().permission && close();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !useApp.getState().permissions.length && close();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);

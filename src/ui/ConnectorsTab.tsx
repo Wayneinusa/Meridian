@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { CATALOG, searchRegistry, type CatalogEntry, type RegistryServer } from "../connectors/catalog";
 import { signInNative } from "../connectors/native";
+import { isBankConnector } from "../connectors/banks";
+import { BankSetup } from "./BankSetup";
 import { forgetTokens, loadTokens, saveTokens, signIn } from "../connectors/oauth";
 import { platform } from "../platform";
 import { deleteSecret, getSecret, mcpTokenName, setSecret } from "../platform/secrets";
@@ -41,6 +43,7 @@ function ConnectorCard({ server }: { server: McpServerConfig }) {
   const status = mcpManager.status.get(server.id);
   const entry = CATALOG.find((c) => c.id === server.catalogId);
   const native = server.transport === "native";
+  const bank = isBankConnector(server.catalogId);
 
   const connect = async () => {
     setBusy("Connecting…");
@@ -81,7 +84,8 @@ function ConnectorCard({ server }: { server: McpServerConfig }) {
   };
 
   const badge =
-    native ? (signedIn ? <span className="badge ok">signed in</span> : <span className="badge err">not signed in</span>)
+    bank ? <span className="badge">read-only</span>
+    : native ? (signedIn ? <span className="badge ok">signed in</span> : <span className="badge err">not signed in</span>)
     : status?.state === "ready" ? <span className="badge ok">{status.tools.length} tool{status.tools.length === 1 ? "" : "s"}</span>
     : status?.state === "signin" ? <span className="badge err">sign in needed</span>
     : status?.state === "error" ? <span className="badge err">error</span>
@@ -102,12 +106,13 @@ function ConnectorCard({ server }: { server: McpServerConfig }) {
       {busy && <div className="hint" style={{ marginTop: 6 }}><span className="spinner" style={{ display: "inline-block", verticalAlign: "-2px" }} /> {busy}</div>}
       {status?.state === "error" && !open && <div className="note err" style={{ marginTop: 8 }}>{status.error}</div>}
       <div className="row wrap" style={{ marginTop: 8 }}>
-        {(native || status?.state === "signin" || server.oauth?.authorized || entry?.auth === "oauth") && !signedIn && (
+        {!bank && (native || status?.state === "signin" || server.oauth?.authorized || entry?.auth === "oauth") && !signedIn && (
           <button className="btn small primary" disabled={!!busy} onClick={() => void doSignIn()}>Sign in</button>
         )}
-        {signedIn && <button className="btn small" onClick={() => void signOut()}>Sign out</button>}
+        {signedIn && !bank && <button className="btn small" onClick={() => void signOut()}>Sign out</button>}
         {!native && <button className="btn small" disabled={!!busy} onClick={() => void connect()}>Connect and list tools</button>}
       </div>
+      {bank && <BankSetup server={server} />}
       {open && (
         <div style={{ marginTop: 10 }}>
           {entry?.note && <p className="hint">{entry.note}</p>}
@@ -233,7 +238,7 @@ function OAuthApps() {
 function addFromCatalog(e: CatalogEntry) {
   const server: McpServerConfig = { id: uid("mcp"), name: e.name, transport: e.transport, url: e.url, enabled: true, catalogId: e.id };
   void updateSettings((s) => ({ mcpServers: [...s.mcpServers, server] }));
-  toast(`${e.name} added. ${e.auth === "oauth" ? "Sign in to finish." : e.auth === "token" ? "Paste your access token under Details." : "Connecting…"}`, "ok");
+  toast(`${e.name} added. ${isBankConnector(e.id) ? "Connect it through SimpleFIN or Plaid on its card." : e.auth === "oauth" ? "Sign in to finish." : e.auth === "token" ? "Paste your access token under Details." : "Connecting…"}`, "ok");
   if (e.auth === "none") setTimeout(() => void mcpManager.connect(server), 300);
 }
 

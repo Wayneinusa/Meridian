@@ -3,7 +3,7 @@
 import type { BlobRef, Conversation, ConvMeta } from "../types";
 import { uid } from "../types";
 import type { KV } from "./kv";
-import { metaOf, normalizeConversation } from "./merge";
+import { META_VERSION, metaOf, normalizeConversation } from "./merge";
 
 export const convKey = (id: string) => `conversations/${id}.json`;
 export const blobKey = (id: string) => `blobs/${id}`;
@@ -22,8 +22,10 @@ export class Repo {
     try {
       const raw = await this.kv.getText(INDEX_KEY);
       if (raw) {
-        for (const m of JSON.parse(raw) as ConvMeta[]) this.metas.set(m.id, m);
-        loaded = true;
+        const list = JSON.parse(raw) as ConvMeta[];
+        for (const m of list) this.metas.set(m.id, m);
+        // an index from an older version lacks newer fields (such as which chats are Grok chats)
+        loaded = list.every((m) => m.mv === META_VERSION);
       }
     } catch {
       loaded = false;

@@ -19,6 +19,8 @@ export interface OAuthTokens {
   client_secret?: string;
   token_endpoint: string;
   resource?: string;
+  /** OpenID Connect ID token (only used to show who is signed in) */
+  id_token?: string;
 }
 
 export const tokenSecret = (id: string) => `oauth.${id}`;
@@ -115,7 +117,7 @@ export async function registerClient(server: AuthServer, redirectUri: string): P
 }
 
 /** Where the browser comes back to, and a way to wait for it. */
-export async function redirectChannel(): Promise<{ uri: string; wait: () => Promise<string> }> {
+export async function redirectChannel(fixedPort?: number): Promise<{ uri: string; wait: () => Promise<string> }> {
   if (!isTauri) throw new Error("Signing in to connectors needs the installed app.");
   if (platform().mobile) {
     const uri = "meridian://oauth/callback";
@@ -134,7 +136,7 @@ export async function redirectChannel(): Promise<{ uri: string; wait: () => Prom
         }),
     };
   }
-  const port = await invoke<number>("oauth_listen");
+  const port = await invoke<number>("oauth_listen", fixedPort ? { port: fixedPort } : {});
   return { uri: `http://127.0.0.1:${port}/callback`, wait: () => invoke<string>("oauth_wait", { port }) };
 }
 
@@ -199,6 +201,7 @@ async function exchange(tokenEndpoint: string, client: { client_id: string; clie
     client_secret: client.client_secret,
     token_endpoint: tokenEndpoint,
     resource,
+    id_token: j.id_token ?? prev?.id_token,
   };
 }
 
@@ -244,8 +247,10 @@ export async function deviceSignIn(opts: {
   scopes: string[];
   onCode: (code: DeviceCode) => void;
   signal?: AbortSignal;
+  /** extra fields for the first request (e.g. xAI's referrer) */
+  extra?: Record<string, string>;
 }): Promise<OAuthTokens> {
-  const form = new URLSearchParams({ client_id: opts.clientId, scope: opts.scopes.join(" ") });
+  const form = new URLSearchParams({ client_id: opts.clientId, scope: opts.scopes.join(" "), ...(opts.extra ?? {}) });
   const res = await httpFetch(opts.deviceEndpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }, body: form.toString(), signal: opts.signal });
   if (!res.ok) throw new Error(`The sign-in service refused: ${await readError(res)}`);
   const d = await res.json();
@@ -279,6 +284,7 @@ export async function deviceSignIn(opts: {
         client_id: client.client_id,
         client_secret: client.client_secret,
         token_endpoint: opts.tokenEndpoint,
+        id_token: j.id_token,
       };
     }
     if (j.error === "authorization_pending") continue;

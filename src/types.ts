@@ -85,6 +85,10 @@ export interface ProviderConfig {
   hasKey?: boolean;
   /** extra HTTP headers sent with every request (non-secret) */
   headers?: Record<string, string>;
+  /** xAI: signed in with X (tokens are in the keychain, not here) */
+  signedIn?: boolean;
+  /** shown as "Signed in with X as …" */
+  signedInAs?: string;
   /** Cloudflare: the account id that goes into the API address */
   accountId?: string;
   /** openai-compatible / custom: which video API the server speaks */
@@ -236,6 +240,10 @@ export interface ConvMeta {
   agentId?: string;
   archived?: boolean;
   tags?: string[];
+  /** the chat uses (or last used) a Grok model: listed in the Grok section */
+  grok?: boolean;
+  /** index format version (older indexes are rebuilt) */
+  mv?: number;
 }
 
 export type McpTransport = "http" | "sse" | "stdio" | "native";

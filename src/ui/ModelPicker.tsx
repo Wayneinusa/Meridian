@@ -4,7 +4,7 @@ import { currentModelRef, setChatModel, toggleFavorite, useApp } from "../state/
 import { findModel } from "../providers/registry";
 import { modelLabel, providerReady } from "../providers/backends";
 import { pricingOf, setupNeeded, useProviders } from "./BackendPicker";
-import type { ModelInfo } from "../types";
+import type { ModelInfo, ProviderConfig } from "../types";
 import { Icon } from "./icons";
 
 export function capBadges(m: ModelInfo): string[] {
@@ -45,16 +45,16 @@ export function ModelPicker() {
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return providers
-      .filter((p) => p.enabled)
-      .map((p) => ({
-        provider: p,
-        models: p.models
-          .filter((m) => (m.kind === tab || (tab === "image" && m.kind === "chat" && m.caps.imageOutput)) && (!q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)))
-          .sort((a, b) => Number(settings.favorites.includes(`${p.id}::${b.id}`)) - Number(settings.favorites.includes(`${p.id}::${a.id}`))),
-      }))
-      .filter((g) => g.models.length);
-  }, [providers, query, tab]);
+    const fits = (m: ModelInfo) => (m.kind === tab || (tab === "image" && m.kind === "chat" && m.caps.imageOutput)) && (!q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q));
+    const isFav = (p: ProviderConfig, m: ModelInfo) => settings.favorites.includes(`${p.id}::${m.id}`);
+    const enabled = providers.filter((p) => p.enabled);
+    // favourites first, across every provider, then each provider's other models
+    const favs = enabled.flatMap((p) => p.models.filter((m) => fits(m) && isFav(p, m)).map((m) => ({ provider: p, model: m })));
+    const rest = enabled
+      .map((p) => ({ title: p.name, provider: p, items: p.models.filter((m) => fits(m) && !isFav(p, m)).map((m) => ({ provider: p, model: m })) }))
+      .filter((g) => g.items.length);
+    return favs.length ? [{ title: "★ Favourites", provider: null as ProviderConfig | null, items: favs }, ...rest] : rest;
+  }, [providers, query, tab, settings.favorites]);
 
   return (
     <div className="pop-anchor" ref={wrap}>
@@ -63,7 +63,7 @@ export function ModelPicker() {
         <Icon.chevron />
       </button>
       {open && (
-        <div className="popover" style={{ right: 0, top: 42, width: 340 }} role="listbox">
+        <div className="popover model-pop" role="listbox">
           <div className="seg" role="tablist" style={{ marginBottom: 6 }}>
             {(["chat", "image", "video"] as const).map((k) => (
               <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "sel" : ""} onClick={() => setTab(k)}>
@@ -82,39 +82,44 @@ export function ModelPicker() {
             </div>
           )}
           {groups.map((g) => (
-            <div key={g.provider.id}>
+            <div key={g.provider?.id ?? "favourites"}>
               <div className="menu-head">
-                {g.provider.name}
-                {pricingOf(g.provider) === "free" ? " · free" : ""}
-                {tab !== "chat" && setupNeeded(g.provider, tab) ? ` · ${setupNeeded(g.provider, tab)}` : !providerReady(g.provider) && tab === "chat" ? " · no key" : ""}
+                {g.title}
+                {g.provider && pricingOf(g.provider) === "free" ? " · free" : ""}
+                {g.provider && (tab !== "chat" && setupNeeded(g.provider, tab) ? ` · ${setupNeeded(g.provider, tab)}` : !providerReady(g.provider) && tab === "chat" ? " · no key" : "")}
               </div>
-              {g.models.map((m) => {
-                const sel = ref?.providerId === g.provider.id && ref.modelId === m.id;
+              {g.items.map(({ provider: p, model: m }) => {
+                const sel = ref?.providerId === p.id && ref.modelId === m.id;
+                const fav = settings.favorites.includes(`${p.id}::${m.id}`);
                 return (
                   <button
-                    key={m.id}
+                    key={`${p.id}::${m.id}`}
                     className={`menu-item ${sel ? "sel" : ""}`}
                     role="option"
                     aria-selected={sel}
                     onClick={() => {
-                      void setChatModel({ providerId: g.provider.id, modelId: m.id });
+                      void setChatModel({ providerId: p.id, modelId: m.id });
                       setOpen(false);
                     }}
                   >
                     <span
                       role="button"
                       tabIndex={0}
-                      className={`star ${settings.favorites.includes(`${g.provider.id}::${m.id}`) ? "on" : ""}`}
-                      title="Favourite (shown first)"
+                      className={`star ${fav ? "on" : ""}`}
+                      title={fav ? "Remove from favourites" : "Favourite (shown first)"}
+                      aria-label={fav ? `Unfavourite ${m.name}` : `Favourite ${m.name}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        void toggleFavorite({ providerId: g.provider.id, modelId: m.id });
+                        void toggleFavorite({ providerId: p.id, modelId: m.id });
                       }}
                     >
                       ★
                     </span>
-                    <span className="grow" title={m.id}>{m.name}</span>
-                    <span className="muted" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>{capBadges(m).join(" · ")}</span>
+                    <span className="model-name" title={m.id}>
+                      {m.name}
+                      {!g.provider && <span className="muted"> · {p.name}</span>}
+                    </span>
+                    <span className="muted model-caps">{capBadges(m).join(" · ")}</span>
                   </button>
                 );
               })}

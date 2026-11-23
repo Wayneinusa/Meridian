@@ -22,7 +22,7 @@ export function Shortcuts() {
       } else if (mod && e.key.toLowerCase() === "b") {
         e.preventDefault();
         useApp.setState((s) => ({ sidebarOpen: !s.sidebarOpen }));
-      } else if (e.key === "Escape" && !useApp.getState().permission && !useApp.getState().question && !useApp.getState().settingsTab && !document.querySelector(".overlay")) {
+      } else if (e.key === "Escape" &&  !useApp.getState().settingsTab && !document.querySelector(".overlay")) {
         const id = useApp.getState().activeId;
         if (id && useApp.getState().busy[id] !== undefined) stop(id);
       }

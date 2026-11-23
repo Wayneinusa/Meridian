@@ -19,6 +19,9 @@ const TOOL_LABELS: Record<string, string> = {
   generate_video: "Generate video",
   fetch_url: "Fetch page",
   web_search: "Web search",
+  x_search: "X search",
+  bank_list_accounts: "Bank accounts",
+  bank_transactions: "Bank transactions",
   web_fetch: "Read page",
   run_command: "Run command",
   read_file: "Read file",
@@ -174,6 +177,7 @@ function ToolCall({ part }: { part: Extract<Part, { type: "tool_call" }> }) {
         {working ? <span className="spinner" /> : null}
         <span className="tool-name">{toolLabel(part.name)}</span>
         <span className="tool-sum">{toolSummary(part.input)}</span>
+        {part.server && <span className="badge" title="Run by the model's provider (cited)">native</span>}
         {badge}
       </summary>
       <div className="tool-body">

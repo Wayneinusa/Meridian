@@ -34,7 +34,7 @@ export interface EngineHost {
   render(c: Conversation): void;
   save(c: Conversation, soon?: boolean): void | Promise<void>;
   setBusy(convId: string, note: string | null): void;
-  askPermission(convId: string, tool: Tool, input: Record<string, unknown>): Promise<"deny" | "once" | "always">;
+  askPermission(convId: string, tool: Tool, input: Record<string, unknown>, callId?: string): Promise<"deny" | "once" | "always">;
   ask(convId: string, question: string, options: string[], multiple: boolean): Promise<string | null>;
   allowAlways(toolName: string): Promise<void>;
   notice(text: string): void;
@@ -102,10 +102,16 @@ function insideFolder(path: unknown, folder: string): boolean {
   return (p === f || p.startsWith(f + "/")) && !p.split("/").includes("..");
 }
 
-/** Claude on Anthropic's own API searches the web itself (better results, cited). */
-function hostedSearch(settings: Settings, c: Conversation, agent: Agent | undefined, provider: { kind: string; baseUrl: string }): boolean {
+/**
+ * Claude on Anthropic's API, and Grok on xAI's, search the web themselves
+ * (better results, cited; Grok can also search X). Others use Meridian's search tool.
+ */
+function hostedSearch(settings: Settings, c: Conversation, agent: Agent | undefined, provider: { kind: string; baseUrl: string; signedIn?: boolean }): boolean {
   const web = (agent?.tools?.web ?? settings.tools.web) || c.mode === "research";
-  return web && settings.webSearch && provider.kind === "anthropic" && /api\.anthropic\.com/.test(provider.baseUrl || "https://api.anthropic.com");
+  if (!web || !settings.webSearch) return false;
+  if (provider.kind === "anthropic") return /api\.anthropic\.com/.test(provider.baseUrl || "https://api.anthropic.com");
+  if (provider.kind === "xai") return !!provider.signedIn || /api\.x\.ai/.test(provider.baseUrl || "https://api.x.ai/v1");
+  return false;
 }
 
 async function assembleTools(host: EngineHost, c: Conversation, settings: Settings, model: { caps: { tools: boolean } }, agent: Agent | undefined, knowledge: KnowledgeFile[], fullKnowledge: boolean, depth: number, hosted: boolean): Promise<Tool[]> {
@@ -165,7 +171,7 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
         return;
       }
       const apiKey = await host.getKey(provider.id);
-      if (!apiKey && provider.kind !== "openai-compatible") throw new Error(`No API key for ${provider.name}. Add one in Settings → Providers & keys.`);
+      if (!apiKey && provider.kind !== "openai-compatible" && !provider.signedIn) throw new Error(`No API key for ${provider.name}. Add one in Settings → Providers & keys.`);
 
       if (!model.caps.pdf) {
         for (const m of c.messages) {
@@ -292,7 +298,7 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
             const pre = opts.autoApprove || s.alwaysAllow.includes(tool.spec.name) || (tool.group === "computer" && s.autoApproveComputer);
             if (tool.needsApproval(input, ctx) && !pre) {
               host.setBusy(c.id, "waiting for your OK");
-              const decision = await host.askPermission(c.id, tool, input);
+              const decision = await host.askPermission(c.id, tool, input, call.id);
               if (decision === "always") await host.allowAlways(tool.spec.name);
               allowed = decision !== "deny";
             }

@@ -3,7 +3,7 @@ import { startAutomations } from "./automations/runner";
 import { startBackground } from "./platform/background";
 import { init, useApp } from "./state/store";
 import { Chat } from "./ui/Chat";
-import { PermissionDialog, PreviewDialog, QuestionDialog, Toasts } from "./ui/Dialogs";
+import { PreviewDialog, Toasts } from "./ui/Dialogs";
 import { AgentsPage } from "./ui/pages/Agents";
 import { AutomationsPage } from "./ui/pages/Automations";
 import { SearchPage, UsagePage } from "./ui/pages/Misc";
@@ -68,8 +68,6 @@ export function App() {
       )}
       {settingsTab && <SettingsModal />}
       <PreviewDialog />
-      <PermissionDialog />
-      <QuestionDialog />
       <Shortcuts />
       <Toasts />
     </div>

@@ -1,0 +1,415 @@
+// Grok (xAI): two ways in, and xAI's own search tools.
+//
+// Sign-in
+//   API key          https://api.x.ai/v1 with the key from console.x.ai
+//   Sign in with X   xAI's OAuth (auth.x.ai) with the public client of xAI's
+//                    Grok CLI: browser sign-in on desktop (loopback port 56121,
+//                    the only one that client allows) or a device code anywhere.
+//                    Requests then go to xAI's CLI gateway and are billed to the
+//                    user's SuperGrok / X Premium subscription. Tokens live in the
+//                    keychain and refresh automatically. When both exist, the
+//                    sign-in wins, as in xAI's own tools.
+//
+// Chat
+//   Responses API (/v1/responses) with xAI's server-side tools web_search and
+//   x_search, which xAI runs itself and cites. Used when native search is on or
+//   the user signed in with X; otherwise the Chat Completions dialect (openai.ts).
+import { accessToken, deviceSignIn, forgetTokens, loadTokens, redirectChannel, saveTokens, signIn, type DeviceCode, type OAuthTokens } from "../connectors/oauth";
+import { httpFetch, readError } from "../platform/http";
+import type { ModelInfo, Part, ProviderConfig } from "../types";
+import { uid } from "../types";
+import { clientToolCalls, resultOf, sseEvents, trimSlash, userItems } from "./common";
+import { openaiAdapter } from "./openai";
+import { ProviderError, type ChatRequest, type ChatResult, type ProviderAdapter, type StopKind } from "./types";
+
+export const XAI_ISSUER = "https://auth.x.ai";
+export const XAI_AUTHORIZE = `${XAI_ISSUER}/oauth2/authorize`;
+export const XAI_TOKEN = `${XAI_ISSUER}/oauth2/token`;
+export const XAI_DEVICE = `${XAI_ISSUER}/oauth2/device/code`;
+/** the public OAuth client of xAI's Grok CLI (the consent page may say "Grok Build") */
+export const XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
+export const XAI_SCOPES = ["openid", "profile", "email", "offline_access", "grok-cli:access", "api:access"];
+export const XAI_REDIRECT_PORT = 56121;
+export const XAI_GATEWAY = "https://cli-chat-proxy.grok.com/v1";
+/** keychain entry for the sign-in (oauth.<id>) */
+export const XAI_TOKEN_ID = "provider.xai";
+const CLIENT_NAME = "meridian";
+const CLIENT_VERSION = "1";
+
+type Json = Record<string, any>;
+
+// ---------------------------------------------------------------- sign-in
+
+export async function signInWithX(mode: "browser" | "device", onCode?: (c: DeviceCode) => void, signal?: AbortSignal): Promise<OAuthTokens> {
+  let tokens: OAuthTokens;
+  if (mode === "device") {
+    tokens = await deviceSignIn({ deviceEndpoint: XAI_DEVICE, tokenEndpoint: XAI_TOKEN, clientId: XAI_CLIENT_ID, scopes: XAI_SCOPES, onCode: onCode ?? (() => undefined), signal, extra: { referrer: CLIENT_NAME } });
+  } else {
+    const nonce = crypto.randomUUID().replace(/-/g, "");
+    tokens = await signIn({
+      server: { authorization_endpoint: XAI_AUTHORIZE, token_endpoint: XAI_TOKEN },
+      clientId: XAI_CLIENT_ID,
+      scopes: XAI_SCOPES,
+      extraAuthParams: { nonce },
+      redirect: await redirectChannel(XAI_REDIRECT_PORT),
+    });
+  }
+  await saveTokens(XAI_TOKEN_ID, tokens);
+  return tokens;
+}
+
+export const signOutOfX = () => forgetTokens(XAI_TOKEN_ID);
+export const hasXSession = async () => !!(await loadTokens(XAI_TOKEN_ID));
+
+/** The account name from the ID token, for "Signed in as …" (display only; not trusted for anything). */
+export function accountFromTokens(t: OAuthTokens): string | undefined {
+  const raw = t.id_token;
+  if (!raw) return undefined;
+  try {
+    const payload = JSON.parse(atob(raw.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return payload.email ?? payload.name ?? payload.preferred_username;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface XaiAuth {
+  mode: "oauth" | "key";
+  token: string;
+}
+
+/** Sign-in first (as xAI's own tools do), then the API key. */
+export async function xaiAuth(provider: ProviderConfig, apiKey: string, force = false): Promise<XaiAuth | null> {
+  if (provider.signedIn) {
+    const t = await accessToken(XAI_TOKEN_ID, force);
+    if (t) return { mode: "oauth", token: t };
+  }
+  return apiKey ? { mode: "key", token: apiKey } : null;
+}
+
+function gatewayHeaders(auth: XaiAuth, model: string, conv: string, stream: boolean): Record<string, string> {
+  return {
+    Authorization: `Bearer ${auth.token}`,
+    "Content-Type": "application/json",
+    Accept: stream ? "text/event-stream" : "application/json",
+    "X-XAI-Token-Auth": "xai-grok-cli",
+    "x-authenticateresponse": "authenticate-response",
+    "x-grok-client-identifier": CLIENT_NAME,
+    "x-grok-client-version": CLIENT_VERSION,
+    "x-grok-client-mode": "interactive",
+    "x-grok-conv-id": conv,
+    "x-grok-session-id": conv,
+    "x-grok-req-id": crypto.randomUUID(),
+    "x-grok-model-override": model,
+  };
+}
+
+// ---------------------------------------------------------------- models
+
+const gatewayModel = (m: Json): ModelInfo | null => {
+  const id = String(m.model ?? m.modelId ?? m.id ?? "");
+  if (!id || m.hidden || /composer/.test(id)) return null;
+  const lower = id.toLowerCase();
+  return {
+    id,
+    name: String(m.name ?? id),
+    kind: "chat",
+    caps: { vision: !/code|mini-fast/.test(lower), pdf: false, tools: true, thinking: /reason|grok-[4-9]|mini/.test(lower) && !/non-reasoning/.test(lower), webSearch: true },
+    contextWindow: Number(m.contextWindow ?? m.context_window) || undefined,
+  };
+};
+
+async function listModels(provider: ProviderConfig, apiKey: string): Promise<ModelInfo[]> {
+  const out = new Map<string, ModelInfo>();
+  const auth = await xaiAuth(provider, apiKey);
+  if (auth?.mode === "oauth") {
+    const res = await httpFetch(`${XAI_GATEWAY}/models-v2`, { headers: gatewayHeaders(auth, "", uid("c"), false) });
+    if (!res.ok) throw new ProviderError(xaiError(res.status, await readError(res)), res.status);
+    for (const m of ((await res.json()).data ?? []) as Json[]) {
+      const info = gatewayModel(m);
+      if (info) out.set(info.id, info);
+    }
+  }
+  // the API (with a key, or the sign-in where xAI accepts it) also lists image and video models
+  const bearer = apiKey || (auth?.mode === "oauth" ? auth.token : "");
+  if (bearer) {
+    try {
+      for (const m of await openaiAdapter.listModels(provider, bearer)) if (!out.has(m.id)) out.set(m.id, { ...m, caps: { ...m.caps, webSearch: m.kind === "chat" } });
+    } catch (e) {
+      if (!out.size) throw e;
+    }
+  }
+  return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function xaiError(status: number, text: string): string {
+  if (status === 403 && /spending-limit|subscription|credits/i.test(text)) return "xAI refused the request: the account has run out of credits or needs a SuperGrok / X Premium subscription. Check grok.com, or use an API key.";
+  if (status === 401) return "xAI did not accept the sign-in. Sign in with X again in Settings → Providers & keys.";
+  return text;
+}
+
+// ---------------------------------------------------------------- Responses API
+
+async function toInput(req: ChatRequest): Promise<Json[]> {
+  const input: Json[] = [];
+  if (req.system) input.push({ role: "system", content: req.system });
+  // xAI Responses takes images inline but other files only by upload: documents go in as extracted text
+  const caps = { ...req.model.caps, pdf: false };
+  for (const m of req.messages) {
+    if (m.role === "user") {
+      const content: Json[] = [];
+      for (const item of await userItems(m, caps, req.blobs)) {
+        if (item.kind === "text") content.push({ type: "input_text", text: item.text });
+        else if (item.kind === "image") content.push({ type: "input_image", image_url: `data:${item.mime};base64,${item.b64}` });
+      }
+      if (content.length) input.push({ role: "user", content });
+      continue;
+    }
+    const text = m.parts.filter((p): p is Extract<Part, { type: "text" }> => p.type === "text").map((p) => p.text).join("");
+    if (text.trim()) input.push({ role: "assistant", content: text });
+    for (const c of clientToolCalls(m)) {
+      input.push({ type: "function_call", call_id: c.id, name: c.name, arguments: JSON.stringify(c.input ?? {}), status: "completed" });
+      const r = resultOf(c);
+      const out: Json[] = [{ type: "input_text", text: (r.isError ? "Error: " : "") + (r.text || "(no output)") }];
+      if (req.model.caps.vision) {
+        for (const img of r.images ?? []) {
+          const b64 = await req.blobs.base64(img.blobId);
+          if (b64) out.push({ type: "input_image", image_url: `data:${img.mime};base64,${b64}` });
+        }
+      }
+      input.push({ type: "function_call_output", call_id: c.id, output: out.length === 1 ? out[0].text : out });
+    }
+  }
+  return input;
+}
+
+export function buildResponsesBody(req: ChatRequest, input: Json[], native: boolean): Json {
+  const p = req.options.params;
+  const body: Json = { model: req.model.id, input, stream: true, store: false };
+  const tools: Json[] = req.tools.map((t) => ({ type: "function", name: t.name, description: t.description, parameters: t.inputSchema }));
+  if (native) {
+    tools.push({ type: "web_search" }, { type: "x_search" });
+    // return the pages each search used, so they can be shown under the search
+    body.include = ["web_search_call.action.sources"];
+  }
+  if (tools.length) body.tools = tools;
+  if (p.toolChoice && req.tools.length) body.tool_choice = p.toolChoice;
+  if (p.parallelToolCalls !== undefined) body.parallel_tool_calls = p.parallelToolCalls;
+  if (p.temperature !== undefined) body.temperature = p.temperature;
+  if (p.topP !== undefined) body.top_p = p.topP;
+  if (p.seed !== undefined) body.seed = p.seed;
+  if (p.maxTokens !== undefined) body.max_output_tokens = p.maxTokens;
+  if (p.responseFormat === "json") body.text = { format: { type: "json_object" } };
+  if (p.effort && p.effort !== "auto" && req.model.caps.thinking && /mini/.test(req.model.id)) body.reasoning = { effort: p.effort === "xhigh" || p.effort === "max" ? "high" : p.effort };
+  return { ...body, ...(p.extraBody ?? {}) };
+}
+
+interface Seg {
+  kind: "text" | "thinking" | "call" | "server";
+  text: string;
+  id?: string;
+  name?: string;
+  args?: string;
+  input?: unknown;
+  status?: "running" | "done" | "error";
+  result?: string;
+}
+
+const SERVER_NAMES: Record<string, string> = { web_search_call: "web_search", x_search_call: "x_search" };
+
+/** What a search call looked for, from its action or arguments. */
+function searchInput(item: Json): Record<string, unknown> {
+  const a = item.action ?? {};
+  if (a.query || a.queries) return { query: a.query ?? a.queries?.join(" | ") };
+  if (a.url) return { url: a.url, ...(a.pattern ? { pattern: a.pattern } : {}) };
+  try {
+    return item.arguments ? JSON.parse(item.arguments) : {};
+  } catch {
+    return { query: String(item.arguments) };
+  }
+}
+
+function sourcesOf(item: Json): string[] {
+  const out: string[] = [];
+  for (const s of (item.action?.sources ?? item.sources ?? []) as Json[]) {
+    const url = typeof s === "string" ? s : s?.url;
+    if (url && !out.includes(url)) out.push(s?.title ? `${s.title}\n${url}` : url);
+  }
+  return out;
+}
+
+async function responsesChat(req: ChatRequest, auth: XaiAuth, native: boolean): Promise<ChatResult> {
+  const body = buildResponsesBody(req, await toInput(req), native);
+  const conv = req.messages[0]?.id ?? uid("c");
+  const post = (a: XaiAuth) =>
+    httpFetch(a.mode === "oauth" ? `${XAI_GATEWAY}/responses` : `${trimSlash(req.provider.baseUrl)}/responses`, {
+      method: "POST",
+      headers: a.mode === "oauth" ? gatewayHeaders(a, req.model.id, conv, true) : { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: `Bearer ${a.token}`, ...(req.provider.headers ?? {}) },
+      body: JSON.stringify(body),
+      signal: req.signal,
+    });
+  let res = await post(auth);
+  // xAI answers an expired sign-in with 401 or 403: refresh once and retry
+  if ((res.status === 401 || res.status === 403) && auth.mode === "oauth") {
+    const text = await res.clone().text();
+    if (!/spending-limit|subscription|credits/i.test(text)) {
+      const fresh = await xaiAuth(req.provider, req.apiKey, true);
+      if (fresh?.mode === "oauth") res = await post(fresh);
+    }
+  }
+  if (!res.ok) throw new ProviderError(xaiError(res.status, await readError(res)), res.status);
+
+  const segs = new Map<number, Seg>();
+  const byItem = new Map<string, Seg>();
+  const citations: { url: string; title?: string }[] = [];
+  let usage: ChatResult["usage"];
+  let status = "";
+  let incomplete = "";
+  const seg = (i: number, make: () => Seg) => {
+    let s = segs.get(i);
+    if (!s) {
+      s = make();
+      segs.set(i, s);
+    }
+    return s;
+  };
+
+  const snapshot = (final: boolean): Part[] => {
+    const parts: Part[] = [];
+    for (const [, s] of [...segs.entries()].sort((a, b) => a[0] - b[0])) {
+      if (s.kind === "text" && s.text) parts.push({ type: "text", text: s.text });
+      else if (s.kind === "thinking" && s.text) parts.push({ type: "thinking", text: s.text });
+      else if (s.kind === "call" && s.name) parts.push({ type: "tool_call", id: s.id!, name: s.name, input: parseArgs(s.args ?? "", final), status: "pending" });
+      else if (s.kind === "server") {
+        const fallback = final && !s.result && citations.length ? citations.map((c) => (c.title ? `${c.title}\n${c.url}` : c.url)).join("\n\n") : undefined;
+        parts.push({
+          type: "tool_call",
+          id: s.id!,
+          name: s.name!,
+          input: s.input ?? {},
+          server: true,
+          status: final ? (s.status === "error" ? "error" : "done") : (s.status ?? "running"),
+          ...(s.result || fallback ? { result: { text: s.result || fallback!, isError: s.status === "error" } } : final ? { result: { text: "Searched." } } : {}),
+        });
+      }
+    }
+    return parts;
+  };
+
+  const onItem = (ev: Json, done: boolean) => {
+    const item = ev.item as Json;
+    const i = Number(ev.output_index ?? segs.size);
+    if (item.type === "function_call") {
+      const s = seg(i, () => ({ kind: "call", text: "", id: item.call_id ?? item.id, name: item.name, args: "" }));
+      byItem.set(item.id, s);
+      if (done && typeof item.arguments === "string") s.args = item.arguments;
+    } else if (SERVER_NAMES[item.type]) {
+      const s = seg(i, () => ({ kind: "server", text: "", id: item.id ?? uid("srv"), name: SERVER_NAMES[item.type], status: "running" }));
+      byItem.set(item.id, s);
+      const inp = searchInput(item);
+      if (Object.keys(inp).length) s.input = inp;
+      if (done) {
+        s.status = item.status === "failed" ? "error" : "done";
+        const src = sourcesOf(item);
+        if (src.length) s.result = src.join("\n\n");
+        else if (item.status === "failed") s.result = "The search failed.";
+      }
+    } else if (item.type === "message" && done) {
+      const s = seg(i, () => ({ kind: "text", text: "" }));
+      const text = (item.content ?? []).map((c: Json) => c.text ?? "").join("");
+      if (text && !s.text) s.text = text;
+      for (const c of item.content ?? []) for (const a of c.annotations ?? []) if (a.type === "url_citation" && a.url && !citations.some((x) => x.url === a.url)) citations.push({ url: a.url, title: a.title });
+    } else if (item.type === "reasoning" && done) {
+      const s = seg(i, () => ({ kind: "thinking", text: "" }));
+      const text = [...(item.summary ?? []), ...(item.content ?? [])].map((c: Json) => c.text ?? "").join("\n");
+      if (text && !s.text) s.text = text;
+    }
+  };
+
+  for await (const ev of sseEvents(res, req.signal)) {
+    if (ev.data === "[DONE]") break;
+    let e: Json;
+    try {
+      e = JSON.parse(ev.data);
+    } catch {
+      continue;
+    }
+    switch (e.type) {
+      case "response.output_text.delta":
+        seg(Number(e.output_index ?? 0), () => ({ kind: "text", text: "" })).text += e.delta ?? "";
+        break;
+      case "response.output_text.annotation.added": {
+        const a = e.annotation ?? {};
+        if (a.type === "url_citation" && a.url && !citations.some((x) => x.url === a.url)) citations.push({ url: a.url, title: a.title });
+        break;
+      }
+      case "response.reasoning_summary_text.delta":
+      case "response.reasoning_text.delta":
+        seg(Number(e.output_index ?? 0), () => ({ kind: "thinking", text: "" })).text += e.delta ?? "";
+        break;
+      case "response.output_item.added":
+        onItem(e, false);
+        break;
+      case "response.output_item.done":
+        onItem(e, true);
+        break;
+      case "response.function_call_arguments.delta": {
+        const s = byItem.get(e.item_id);
+        if (s) s.args = (s.args ?? "") + (e.delta ?? "");
+        break;
+      }
+      case "response.web_search_call.searching":
+      case "response.x_search_call.searching": {
+        const s = byItem.get(e.item_id);
+        if (s) s.status = "running";
+        break;
+      }
+      case "response.completed":
+      case "response.done":
+      case "response.incomplete": {
+        const r = e.response ?? {};
+        status = r.status ?? (e.type === "response.incomplete" ? "incomplete" : "completed");
+        incomplete = r.incomplete_details?.reason ?? "";
+        const u = r.usage;
+        if (u) usage = { input: u.input_tokens, output: u.output_tokens, cacheRead: u.input_tokens_details?.cached_tokens };
+        break;
+      }
+      case "response.failed":
+      case "error": {
+        const err = e.response?.error ?? e.error ?? e;
+        throw new ProviderError(err.message ?? "xAI could not finish the reply.");
+      }
+    }
+    req.onUpdate(snapshot(false));
+  }
+
+  for (const s of segs.values()) if (s.kind === "call" && !s.id) s.id = uid("call_");
+  const parts = snapshot(true);
+  let stop: StopKind = parts.some((p) => p.type === "tool_call" && !p.server) ? "tool_use" : "end";
+  let stopDetail: string | undefined;
+  if (status === "incomplete") {
+    stop = "max_tokens";
+    stopDetail = incomplete === "content_filter" ? "xAI's content filter stopped this reply." : "The reply hit the output limit and was cut off.";
+  }
+  return { parts, stop, stopDetail, usage };
+}
+
+function parseArgs(args: string, final: boolean): unknown {
+  if (!args.trim()) return {};
+  try {
+    return JSON.parse(args);
+  } catch {
+    return final ? { __invalid_json: args } : { __partial: args };
+  }
+}
+
+export const xaiAdapter: ProviderAdapter = {
+  listModels,
+  async chat(req) {
+    const auth = await xaiAuth(req.provider, req.apiKey);
+    if (!auth) throw new ProviderError("Grok needs an API key or Sign in with X (Settings → Providers & keys → xAI).");
+    // xAI's own search and the subscription gateway both need the Responses API
+    if (req.options.webSearch || auth.mode === "oauth") return responsesChat(req, auth, req.options.webSearch);
+    return openaiAdapter.chat({ ...req, apiKey: auth.token });
+  },
+};

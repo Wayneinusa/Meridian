@@ -149,8 +149,12 @@ export function metaOf(c: Conversation): ConvMeta {
     agentId: c.agentId,
     archived: c.archived,
     tags: c.tags,
+    grok: c.model?.providerId === "xai" || c.chatModel?.providerId === "xai" || undefined,
+    mv: META_VERSION,
   };
 }
+
+export const META_VERSION = 2;
 
 /** Every file (attachment, generated artifact, tool screenshot) a conversation points at. */
 export function blobRefsOf(c: Conversation): BlobRef[] {

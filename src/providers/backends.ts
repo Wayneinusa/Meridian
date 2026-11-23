@@ -151,7 +151,7 @@ export function providerReady(p: ProviderConfig, kind?: "image" | "video"): bool
   if (!p.enabled) return false;
   if (p.kind === "openai-compatible" || p.kind === "plugin") return true;
   const b = BACKENDS[p.kind];
-  if (!b) return !!p.hasKey;
+  if (!b) return !!p.hasKey || !!p.signedIn;
   if (b.needsAccountId && !p.accountId) return false;
   if (p.hasKey || b.keyless === "all") return true;
   return b.keyless === "image" && kind !== "video";

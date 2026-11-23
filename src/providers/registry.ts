@@ -1,6 +1,7 @@
 import type { ModelInfo, ModelRef, ProviderConfig, ProviderKind, Settings } from "../types";
 import { ANTHROPIC_DEFAULT_MODELS, anthropicAdapter } from "./anthropic";
 import { geminiAdapter } from "./gemini";
+import { xaiAdapter } from "./xai";
 import { classifyMediaId, openaiAdapter } from "./openai";
 import { BACKENDS, backendModels, HORDE_DEFAULT_MODELS, isMediaOnly, POLLINATIONS_DEFAULT_MODELS } from "./backends";
 import { ProviderError, type ProviderAdapter } from "./types";
@@ -16,6 +17,7 @@ const mediaAdapter: ProviderAdapter = {
 export function adapterFor(kind: ProviderKind): ProviderAdapter {
   if (kind === "anthropic") return anthropicAdapter;
   if (kind === "gemini") return geminiAdapter;
+  if (kind === "xai") return xaiAdapter;
   if (isMediaOnly(kind) && kind !== "custom-media") return mediaAdapter;
   return openaiAdapter;
 }
@@ -72,6 +74,10 @@ export const COMPATIBLE_PRESETS: { name: string; baseUrl: string; needsKey: bool
   { name: "Qwen (DashScope)", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", needsKey: true },
   { name: "Nvidia NIM", baseUrl: "https://integrate.api.nvidia.com/v1", needsKey: true },
   { name: "Azure OpenAI / Foundry (v1)", baseUrl: "https://YOUR-RESOURCE.openai.azure.com/openai/v1", needsKey: true },
+  // Runpod Serverless vLLM: replace ENDPOINT_ID; the key is your Runpod API key. Endpoints that scale to zero start cold: use Wake up.
+  { name: "Runpod (Serverless vLLM)", baseUrl: "https://api.runpod.ai/v2/ENDPOINT_ID/openai/v1", needsKey: true },
+  // Hostinger VPS with the Ollama template: replace with the server's address
+  { name: "Hostinger VPS (Ollama)", baseUrl: "http://YOUR-VPS-IP:11434/v1", needsKey: false },
   { name: "Custom endpoint", baseUrl: "", needsKey: false },
 ];
 

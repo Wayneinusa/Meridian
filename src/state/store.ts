@@ -22,11 +22,13 @@ import { blobRefsOf, emptyConversation } from "../storage/merge";
 import { blobKey, Repo } from "../storage/repo";
 import { emptySyncState, syncWithRemote, type SyncState } from "../storage/sync";
 import { CLOUD_NAMES, cloudKV, cloudSignIn, cloudSignOut } from "../storage/cloudkv";
-import type { DeviceCode } from "../connectors/oauth";
+import { accessToken, type DeviceCode } from "../connectors/oauth";
+import { accountFromTokens, signInWithX, signOutOfX, XAI_TOKEN_ID } from "../providers/xai";
 import { chatToHtml, chatToMarkdown, detectAndImport } from "../storage/transfer";
 import { extractText } from "../tools/extract";
 import { buildDocx, buildPdf } from "../tools/files";
 import { nativeTools } from "../connectors/native";
+import { bankTools } from "../connectors/banks";
 import { mcpManager } from "../tools/mcp";
 import { mediaModelFor, noMediaModelMessage } from "../tools/media";
 import type { Tool } from "../tools/types";
@@ -62,6 +64,8 @@ export interface PermissionRequest {
   summary: string;
   detail: string;
   group: Tool["group"];
+  /** the tool call this is for, so the card can sit next to it in the chat */
+  callId?: string;
   resolve(decision: "deny" | "once" | "always"): void;
 }
 
@@ -119,8 +123,10 @@ interface State {
   active: Conversation | null;
   /** conversation id -> short status while it is generating */
   busy: Record<string, string>;
-  permission: PermissionRequest | null;
-  question: QuestionRequest | null;
+  /** approvals waiting for the user (shown inside the chat they belong to) */
+  permissions: PermissionRequest[];
+  /** questions the assistant asked (shown inside the chat) */
+  questions: QuestionRequest[];
   toasts: Toast[];
   sync: SyncStatus;
   sidebarOpen: boolean;
@@ -148,8 +154,8 @@ export const useApp = create<State>(() => ({
   activeId: null,
   active: null,
   busy: {},
-  permission: null,
-  question: null,
+  permissions: [],
+  questions: [],
   toasts: [],
   sync: { state: "off" },
   sidebarOpen: typeof window !== "undefined" ? window.innerWidth > 860 : true,
@@ -343,10 +349,34 @@ export function setView(view: View) {
 // ---------------------------------------------------------------- providers & keys
 
 export async function getKey(providerId: string): Promise<string> {
-  if (keyCache.has(providerId)) return keyCache.get(providerId)!;
-  const k = (await getSecret(providerKeyName(providerId))) ?? "";
-  keyCache.set(providerId, k);
+  let k = keyCache.get(providerId);
+  if (k === undefined) {
+    k = (await getSecret(providerKeyName(providerId))) ?? "";
+    keyCache.set(providerId, k);
+  }
+  // Grok signed in with X and no key: the sign-in token works for xAI's image, video and voice APIs too
+  if (!k) {
+    const p = get().settings.providers.find((x) => x.id === providerId);
+    if (p?.kind === "xai" && p.signedIn) return (await accessToken(XAI_TOKEN_ID)) ?? "";
+  }
   return k;
+}
+
+/** Sign in with X for Grok: in the browser (desktop) or with a code (any device). */
+export async function signInGrok(providerId: string, mode: "browser" | "device", onCode?: (c: DeviceCode) => void, signal?: AbortSignal) {
+  const tokens = await signInWithX(mode, onCode, signal);
+  const who = accountFromTokens(tokens);
+  await updateSettings((s) => ({ providers: s.providers.map((p) => (p.id === providerId ? { ...p, signedIn: true, signedInAs: who } : p)) }));
+  try {
+    await refreshModels(providerId);
+  } catch (e) {
+    toast(`Signed in, but the model list could not be loaded: ${errText(e)}`, "error");
+  }
+}
+
+export async function signOutGrok(providerId: string) {
+  await signOutOfX();
+  await updateSettings((s) => ({ providers: s.providers.map((p) => (p.id === providerId ? { ...p, signedIn: false, signedInAs: undefined } : p)) }));
 }
 
 export async function saveProviderKey(providerId: string, key: string) {
@@ -653,22 +683,24 @@ const blobs: BlobAccess = {
 
 // ---------------------------------------------------------------- engine host
 
-function askPermission(convId: string, tool: Tool, input: Record<string, unknown>): Promise<"deny" | "once" | "always"> {
+function askPermission(convId: string, tool: Tool, input: Record<string, unknown>, callId?: string): Promise<"deny" | "once" | "always"> {
   return new Promise((resolve) => {
     const req: PermissionRequest = {
       id: uid("p"),
       convId,
+      callId,
       toolName: tool.spec.name,
       title: tool.title,
       summary: tool.summarize(input),
       detail: JSON.stringify(input, null, 2),
       group: tool.group,
       resolve: (d) => {
-        if (get().permission?.id === req.id) set({ permission: null });
+        set({ permissions: get().permissions.filter((x) => x.id !== req.id) });
         resolve(d);
       },
     };
-    set({ permission: req });
+    set({ permissions: [...get().permissions, req] });
+    if (typeof document !== "undefined" && document.visibilityState === "hidden" && get().settings.notifications) void notify("Meridian needs your OK", `${tool.title}: ${req.summary}`.slice(0, 180));
   });
 }
 
@@ -681,11 +713,11 @@ function askQuestion(convId: string, question: string, options: string[], multip
       options,
       multiple,
       resolve: (a) => {
-        if (get().question?.id === req.id) set({ question: null });
+        set({ questions: get().questions.filter((x) => x.id !== req.id) });
         resolve(a);
       },
     };
-    set({ question: req });
+    set({ questions: [...get().questions, req] });
     if (document.visibilityState === "hidden" && get().settings.notifications) void notify("Meridian needs your answer", question);
   });
 }
@@ -711,7 +743,7 @@ export const host: EngineHost = {
   getSecret: (name) => getSecret(name),
   connectorTools: async (settings) => {
     const all = allConnectors(settings);
-    return [...(await mcpManager.tools(all.filter((c) => c.transport !== "native"))), ...(await nativeTools(all))];
+    return [...(await mcpManager.tools(all.filter((c) => c.transport !== "native"))), ...(await nativeTools(all)), ...bankTools(all, (n) => getSecret(n))];
   },
   render: (c) => render(c.id),
   save: (c, soon) => (soon ? saveSoon(c.id, 3000) : saveNow(c.id)),
@@ -783,10 +815,8 @@ export function stop(convId?: string | null) {
   const id = convId ?? get().activeId;
   if (!id) return;
   for (const [k, a] of aborts) if (k === id || k.startsWith(`${id}|`)) a.abort();
-  const perm = get().permission;
-  if (perm?.convId === id) perm.resolve("deny");
-  const q = get().question;
-  if (q?.convId === id) q.resolve(null);
+  for (const p of get().permissions.filter((x) => x.convId === id)) p.resolve("deny");
+  for (const q of get().questions.filter((x) => x.convId === id)) q.resolve(null);
 }
 
 function lastUserIndex(c: Conversation): number {

@@ -13,7 +13,8 @@
     "tauri": "tauri",
     "e2e:features": "node e2e/features.cjs",
     "e2e:native": "node e2e/native.cjs",
-    "e2e:media": "node e2e/media-sync.cjs"
+    "e2e:media": "node e2e/media-sync.cjs",
+    "e2e:grok": "node e2e/grok-banks.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.9.0",

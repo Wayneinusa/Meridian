@@ -198,7 +198,7 @@ async function sendMessage(page, text) {
   await page.locator('button[title="Send"]').click();
 }
 async function idle(page) {
-  await page.waitForFunction(() => !document.querySelector('button[title="Stop"]') && !document.querySelector('[role="alertdialog"]'), null, { timeout: 30000 });
+  await page.waitForFunction(() => !document.querySelector('button[title="Stop"]') && !document.querySelector('.perm-card'), null, { timeout: 30000 });
   await page.waitForTimeout(150);
 }
 async function openSettings(page, tab) {
@@ -238,7 +238,7 @@ async function main() {
 
     console.log("provider key + model list");
     await openSettings(page, "Providers & keys");
-    const anthropicCard = page.locator(".card", { hasText: "Anthropic" }).first();
+    const anthropicCard = page.locator(".card", { has: page.locator("h4", { hasText: /^Anthropic$/ }) }).first();
     await anthropicCard.locator('input[type="password"]').fill("sk-ant-test-key");
     await anthropicCard.getByRole("button", { name: "Save" }).click();
     await page.waitForSelector(".toast.ok");
@@ -309,15 +309,15 @@ async function main() {
 
     console.log("permission prompt (URL the user did not type)");
     await sendMessage(page, "Please look up the news");
-    await page.waitForSelector('[role="alertdialog"]');
-    check("approval dialog names the URL", /news\.example\.org\/today/.test(await page.locator('[role="alertdialog"] .perm-cmd').first().textContent()));
+    await page.waitForSelector('.perm-card');
+    check("approval dialog names the URL", /news\.example\.org\/today/.test(await page.locator('.perm-card .perm-cmd').first().textContent()));
     await shot(page, "04-permission");
     await page.getByRole("button", { name: "Don't allow" }).click();
     await idle(page);
     check("declined call is reported to the model as an error", seen.anthropic[seen.anthropic.length - 1].body.messages.at(-1).content[0].is_error === true);
     check("declined badge shown", (await page.locator(".tool .badge.err", { hasText: "declined" }).count()) === 1);
     await sendMessage(page, "Please look up the news again");
-    await page.waitForSelector('[role="alertdialog"]');
+    await page.waitForSelector('.perm-card');
     await page.getByRole("button", { name: "Allow once" }).click();
     await idle(page);
     const fetched = seen.anthropic[seen.anthropic.length - 1].body.messages.at(-1).content[0];
@@ -331,7 +331,7 @@ async function main() {
 
     console.log("second provider, image model, parameters");
     await openSettings(page, "Providers & keys");
-    const openaiCard = page.locator(".card", { hasText: "OpenAI" }).first();
+    const openaiCard = page.locator(".card", { has: page.locator("h4", { hasText: /^OpenAI$/ }) }).first();
     await openaiCard.locator('input[type="password"]').fill("sk-openai-test");
     await openaiCard.getByRole("button", { name: "Save" }).click();
     await page.waitForFunction(() => [...document.querySelectorAll(".toast.ok")].some((t) => /OpenAI: 3 models/.test(t.textContent)));
@@ -397,8 +397,8 @@ async function main() {
     await page.locator(".model-btn").click();
     await page.getByRole("option", { name: /Opus 5\.5/ }).click();
     await sendMessage(page, "use the connector to check invoice 42");
-    await page.waitForSelector('[role="alertdialog"]');
-    check("connector call asks first", /Demo → lookup/.test(await page.locator('[role="alertdialog"] .perm-cmd').first().textContent()));
+    await page.waitForSelector('.perm-card');
+    check("connector call asks first", /Demo → lookup/.test(await page.locator('.perm-card .perm-cmd').first().textContent()));
     await page.getByRole("button", { name: "Allow once" }).click();
     await idle(page);
     const mr = seen.anthropic[seen.anthropic.length - 1].body.messages.at(-1).content[0];
@@ -456,14 +456,14 @@ async function main() {
     await page.locator(".msg.assistant").last().hover();
     await page.locator('button[title="Try again"]').click();
     // the last question triggers the connector again, so the app must ask again (after reconnecting to it)
-    await page.waitForSelector('[role="alertdialog"]');
+    await page.waitForSelector('.perm-card');
     await page.getByRole("button", { name: "Allow once" }).click();
     await idle(page);
     check("regenerate keeps message count stable", (await page.locator(".msg").count()) === nBefore, `${await page.locator(".msg").count()} vs ${nBefore}`);
 
     console.log("Grok Imagine: image mode, edit, animate");
     await openSettings(page, "Providers & keys");
-    const xaiCard = page.locator(".card", { hasText: "xAI (Grok)" }).first();
+    const xaiCard = page.locator(".card", { has: page.locator("h4", { hasText: /^xAI \(Grok\)$/ }) }).first();
     await xaiCard.locator('input[type="password"]').fill("xai-test");
     await xaiCard.getByRole("button", { name: "Save" }).click();
     await page.waitForFunction(() => [...document.querySelectorAll(".toast.ok")].some((t) => /xAI \(Grok\): 3 models/.test(t.textContent)));

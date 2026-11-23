@@ -94,20 +94,35 @@ export function Sidebar() {
   const showArchived = useApp((s) => s.showArchived);
   const [query, setQuery] = useState("");
 
-  const groups = useMemo(() => {
+  const [grokOpen, setGrokOpen] = useState(() => {
+    try {
+      return localStorage.getItem("meridian.grokOpen") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const { groups, grok } = useMemo(() => {
     const q = query.trim().toLowerCase();
     const now = Date.now();
     const out: { name: string; items: ConvMeta[] }[] = [];
+    const grokChats: ConvMeta[] = [];
     for (const m of metas) {
       if (!!m.archived !== showArchived) continue;
       if (!q && m.projectId) continue; // project chats live under their project
       if (q && !m.title.toLowerCase().includes(q) && !(m.preview ?? "").toLowerCase().includes(q)) continue;
+      // Grok chats get their own section at the very bottom (only a grouping: pin, archive, move work as usual)
+      if (m.grok && !showArchived) {
+        grokChats.push(m);
+        continue;
+      }
       const g = showArchived ? "Archived" : groupOf(m, now);
       const last = out[out.length - 1];
       if (last?.name === g) last.items.push(m);
       else out.push({ name: g, items: [m] });
     }
-    return out;
+    // pinned Grok chats first, like the main list
+    grokChats.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
+    return { groups: out, grok: grokChats };
   }, [metas, query, showArchived]);
 
   const syncLabel =
@@ -159,7 +174,7 @@ export function Sidebar() {
           </div>
         )}
         <input type="search" placeholder="Filter chats" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Filter chats" style={{ margin: "10px 0 2px" }} />
-        {groups.length === 0 && <div className="hint" style={{ padding: 12 }}>{query ? "No chats match." : showArchived ? "No archived chats." : "Your chats will appear here."}</div>}
+        {groups.length === 0 && grok.length === 0 && <div className="hint" style={{ padding: 12 }}>{query ? "No chats match." : showArchived ? "No archived chats." : "Your chats will appear here."}</div>}
         {groups.map((g) => (
           <div key={g.name}>
             <div className="conv-group">{g.name}</div>
@@ -168,6 +183,28 @@ export function Sidebar() {
             ))}
           </div>
         ))}
+        {grok.length > 0 && (
+          <div className="grok-section">
+            <button
+              className="conv-group grok-head"
+              aria-expanded={grokOpen}
+              onClick={() => {
+                setGrokOpen(!grokOpen);
+                try {
+                  localStorage.setItem("meridian.grokOpen", grokOpen ? "0" : "1");
+                } catch {
+                  /* not remembered */
+                }
+              }}
+            >
+              <span className="grok-mark">𝕏</span>
+              <span className="grow">Grok</span>
+              <span className="badge">{grok.length}</span>
+              <span aria-hidden="true">{grokOpen ? "▾" : "▸"}</span>
+            </button>
+            {grokOpen && grok.map((m) => <ChatRow key={m.id} m={m} active={m.id === activeId && view.name === "chat"} busy={busy[m.id] !== undefined} />)}
+          </div>
+        )}
         <button className="link-btn" onClick={() => useApp.setState({ showArchived: !showArchived })}>
           {showArchived ? "← Back to chats" : `Archived chats (${metas.filter((m) => m.archived).length})`}
         </button>

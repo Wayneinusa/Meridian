@@ -16,9 +16,12 @@ pub struct OAuthState(pub Mutex<HashMap<u16, oneshot::Receiver<String>>>);
 const PAGE: &str = "<!doctype html><meta charset=utf-8><title>Signed in</title><body style=\"font:16px -apple-system,Segoe UI,sans-serif;display:grid;place-items:center;height:90vh;color:#1e1d1a\"><div style=\"text-align:center\"><h2>You're signed in</h2><p>You can close this tab and return to Meridian.</p></div>";
 
 /// Start listening; returns the port. The redirect URI is http://127.0.0.1:<port>/callback
+/// `port` pins the port for services that only accept one fixed redirect (xAI uses 56121).
 #[tauri::command]
-pub async fn oauth_listen(state: State<'_, OAuthState>) -> Result<u16, String> {
-    let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+pub async fn oauth_listen(state: State<'_, OAuthState>, port: Option<u16>) -> Result<u16, String> {
+    let listener = TcpListener::bind(("127.0.0.1", port.unwrap_or(0)))
+        .await
+        .map_err(|e| if port.is_some() { format!("port {} is in use (is another Grok app signing in?): {e}", port.unwrap_or(0)) } else { e.to_string() })?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let (tx, rx) = oneshot::channel::<String>();
     state.0.lock().map_err(|e| e.to_string())?.insert(port, rx);

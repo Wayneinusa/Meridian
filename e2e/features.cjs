@@ -114,7 +114,7 @@ async function send(page, text) {
   await page.locator('button[title="Send"]').click();
 }
 async function idle(page) {
-  await page.waitForFunction(() => !document.querySelector('button[title="Stop"]') && !document.querySelector('[role="alertdialog"]') && !document.querySelector('.overlay [aria-labelledby="q-title"]'), null, { timeout: 30000 });
+  await page.waitForFunction(() => !document.querySelector('button[title="Stop"]') && !document.querySelector('.perm-card') && !document.querySelector('.question-card'), null, { timeout: 30000 });
   await page.waitForTimeout(200);
 }
 async function settings(page, tab) {
@@ -147,7 +147,7 @@ async function main() {
     await page.waitForSelector(".empty h1");
     await settings(page, "Providers & keys");
     for (const [name, key] of [["Anthropic", "sk-ant"], ["OpenAI", "sk-oa"]]) {
-      const card = page.locator(".card", { hasText: name }).first();
+      const card = page.locator(".card", { has: page.locator("h4", { hasText: new RegExp(`^${name}$`) }) }).first();
       await card.locator('input[type="password"]').fill(key);
       await card.getByRole("button", { name: "Save", exact: true }).click();
       await page.waitForFunction((n) => [...document.querySelectorAll(".toast.ok")].some((t) => t.textContent.startsWith(n)), name);
@@ -251,7 +251,7 @@ async function main() {
 
     console.log("question, plan, sub-agents");
     await send(page, "ask me something");
-    await page.waitForSelector('[aria-labelledby="q-title"]');
+    await page.waitForSelector('.question-card');
     await page.getByRole("button", { name: "Table" }).click();
     await idle(page);
     check("answer to the question returned to the model", /The user answered: Table/.test(await lastAssistant(page).textContent()));
