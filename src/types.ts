@@ -341,10 +341,32 @@ export interface Settings {
     media: boolean;
     web: boolean;
     computer: boolean;
+    /** the assistant's own browser (desktop) */
+    browser: boolean;
     connectors: boolean;
+  };
+  browser: {
+    /** chromium: Meridian's own (downloaded once); firefox: the installed Firefox */
+    engine: "chromium" | "firefox";
+    /** show the browser window (off: it runs invisibly; the panel in the chat still shows it) */
+    showWindow: boolean;
+    /** rules: reading never asks, new sites / submits / passwords / downloads ask; each: every action asks */
+    approval: "rules" | "each";
+    /** sites the assistant may open without asking */
+    allowSites: string[];
   };
   /** never ask before running computer tools. Dangerous; off by default. */
   autoApproveComputer: boolean;
+  /** visual computer use (the computer tool) */
+  computerUse: {
+    /** each: every action asks (default); risky: typing, shortcuts and drags ask; auto: nothing asks */
+    approval: "each" | "risky" | "auto";
+    actionsPerMinute: number;
+    /** step budget for a task that uses the computer */
+    maxSteps: number;
+    /** screenshots kept in the model's view (older ones are dropped to save tokens) */
+    keepScreenshots: number;
+  };
   /** tool names the user chose "always allow" for */
   alwaysAllow: string[];
   mcpServers: McpServerConfig[];

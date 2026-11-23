@@ -5,8 +5,25 @@
 //! space and are mapped back to real screen pixels here.
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::State;
+
+/// Computer-use kill switch: while set, every input action is refused.
+/// Set from the app (Stop, Esc, the global shortcut) and cleared when a new task starts.
+pub static KILL: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub fn computer_kill(on: bool) {
+    KILL.store(on, Ordering::SeqCst);
+}
+
+#[derive(Serialize)]
+pub struct WindowInfo {
+    title: String,
+    app: String,
+    minimized: bool,
+}
 
 #[derive(Clone, Copy)]
 #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
@@ -108,6 +125,22 @@ mod imp {
         })
     }
 
+    pub fn windows() -> Result<Vec<WindowInfo>, String> {
+        let list = xcap::Window::all().map_err(|e| e.to_string())?;
+        Ok(list
+            .into_iter()
+            .filter_map(|w| {
+                let title = w.title().ok()?;
+                let app = w.app_name().unwrap_or_default();
+                if title.trim().is_empty() && app.trim().is_empty() {
+                    return None;
+                }
+                Some(WindowInfo { title, app, minimized: w.is_minimized().unwrap_or(false) })
+            })
+            .collect())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn input(
         state: &ScreenState,
         action: &str,
@@ -116,16 +149,24 @@ mod imp {
         dy: Option<i32>,
         text: Option<String>,
         keys: Option<String>,
+        x2: Option<i32>,
+        y2: Option<i32>,
+        dx: Option<i32>,
     ) -> Result<(), String> {
+        if KILL.load(Ordering::SeqCst) {
+            return Err("Computer use was stopped with the kill switch.".into());
+        }
         let e = |err: enigo::InputError| err.to_string();
         let mut enigo = Enigo::new(&Settings::default()).map_err(|err| format!("cannot control input: {err}"))?;
         let mapping = *state.0.lock().map_err(|e| e.to_string())?;
 
+        let to_screen = |x: i32, y: i32| -> Result<(i32, i32), String> {
+            let m = mapping.ok_or("take a screenshot first so coordinates can be mapped to the screen")?;
+            Ok((m.origin_x + (x as f64 * m.scale).round() as i32, m.origin_y + (y as f64 * m.scale).round() as i32))
+        };
         let go_to = |enigo: &mut Enigo| -> Result<(), String> {
             let (Some(x), Some(y)) = (x, y) else { return Err("x and y are required for this action".into()) };
-            let m = mapping.ok_or("take a screenshot first so coordinates can be mapped to the screen")?;
-            let rx = m.origin_x + (x as f64 * m.scale).round() as i32;
-            let ry = m.origin_y + (y as f64 * m.scale).round() as i32;
+            let (rx, ry) = to_screen(x, y)?;
             enigo.move_mouse(rx, ry, Coordinate::Abs).map_err(e)
         };
 
@@ -149,7 +190,27 @@ mod imp {
                 if x.is_some() && y.is_some() {
                     go_to(&mut enigo)?;
                 }
-                enigo.scroll(dy.unwrap_or(3), Axis::Vertical).map_err(e)
+                if let Some(dx) = dx.filter(|d| *d != 0) {
+                    enigo.scroll(dx, Axis::Horizontal).map_err(e)?;
+                }
+                match dy {
+                    Some(0) => Ok(()),
+                    Some(d) => enigo.scroll(d, Axis::Vertical).map_err(e),
+                    None if dx.is_some() => Ok(()),
+                    None => enigo.scroll(3, Axis::Vertical).map_err(e),
+                }
+            }
+            "drag" => {
+                let (Some(tx), Some(ty)) = (x2, y2) else { return Err("x2 and y2 (where to drop) are required for drag".into()) };
+                go_to(&mut enigo)?;
+                enigo.button(Button::Left, Direction::Press).map_err(e)?;
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                let (rx, ry) = to_screen(tx, ty)?;
+                let moved = enigo.move_mouse(rx, ry, Coordinate::Abs).map_err(e);
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                // release even if the move failed, so the button is never left held down
+                let released = enigo.button(Button::Left, Direction::Release).map_err(e);
+                moved.and(released)
             }
             "type" => enigo.text(&text.ok_or("text is required")?).map_err(e),
             "key" => {
@@ -179,6 +240,7 @@ pub fn screenshot(state: State<'_, ScreenState>) -> Result<Shot, String> {
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 pub fn input_action(
     state: State<'_, ScreenState>,
     action: String,
@@ -187,8 +249,23 @@ pub fn input_action(
     dy: Option<i32>,
     text: Option<String>,
     keys: Option<String>,
+    x2: Option<i32>,
+    y2: Option<i32>,
+    dx: Option<i32>,
 ) -> Result<(), String> {
-    imp::input(&state, &action, x, y, dy, text, keys)
+    imp::input(&state, &action, x, y, dy, text, keys, x2, y2, dx)
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[tauri::command(async)]
+pub fn list_windows() -> Result<Vec<WindowInfo>, String> {
+    imp::windows()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[tauri::command(async)]
+pub fn list_windows() -> Result<Vec<WindowInfo>, String> {
+    Err("Window listing is not available on this platform.".into())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -199,6 +276,7 @@ pub fn screenshot(_state: State<'_, ScreenState>) -> Result<Shot, String> {
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 pub fn input_action(
     _state: State<'_, ScreenState>,
     _action: String,
@@ -207,6 +285,9 @@ pub fn input_action(
     _dy: Option<i32>,
     _text: Option<String>,
     _keys: Option<String>,
+    _x2: Option<i32>,
+    _y2: Option<i32>,
+    _dx: Option<i32>,
 ) -> Result<(), String> {
     Err("Mouse and keyboard control is not available on this platform.".into())
 }

@@ -12,6 +12,7 @@ import type { DeviceCode } from "../connectors/oauth";
 import type { CloudSync, McpServerConfig, MediaHttpSpec, ModelInfo, ModelRef, ProviderConfig, ProviderKind, Settings } from "../types";
 import { modelKey, uid } from "../types";
 import { useProviders } from "./BackendPicker";
+import { BrowserSettings } from "./BrowserSettings";
 import { Icon } from "./icons";
 import { ConnectorsTab } from "./ConnectorsTab";
 import { MemoryTab, PluginsTab } from "./PluginsTab";
@@ -608,13 +609,52 @@ function ToolsTab({ settings }: { settings: Settings }) {
           />
           {!p.canControlScreen && <div className="hint">Screenshots and mouse/keyboard control are available in the Windows and macOS builds.</div>}
         </div>
-      ) : (
+      ) : null}
+      {p.desktop && p.canControlScreen ? (
+        <div className="card" data-testid="computer-use-settings">
+          <h4 style={{ marginTop: 0 }}>Computer use (screen, mouse and keyboard)</h4>
+          <p className="hint" style={{ marginTop: 0 }}>
+            The assistant looks at a screenshot, chooses an action, and gets a new screenshot after it, step by step. Each step shows in the chat with a picture of where it will click.
+            Press <b>Stop</b>, <b>Esc</b>, or <b>Ctrl+Alt+Esc</b> anywhere (⌃⌥Esc on a Mac) to stop at once; mouse and keyboard stay blocked until you send a new message.
+          </p>
+          <label className="field">
+            <span>Ask before</span>
+            <select value={settings.computerUse.approval} onChange={(e) => {
+              const v = e.target.value as Settings["computerUse"]["approval"];
+              if (v === "auto" && !confirm("Every mouse click and keystroke will happen without asking. A mistaken or manipulated instruction could delete, send or buy things. Turn this on?")) return;
+              void updateSettings((st) => ({ computerUse: { ...st.computerUse, approval: v } }));
+            }} aria-label="Computer use approval">
+              <option value="each">Every action (recommended)</option>
+              <option value="risky">Risky actions only: typing, shortcuts, drags, right and double clicks</option>
+              <option value="auto">Nothing (not recommended)</option>
+            </select>
+            <small className="hint">The approval card also offers “Allow for this task”, which stops asking until you send your next message.</small>
+          </label>
+          <div className="row wrap">
+            <label className="field" style={{ flex: "1 1 160px" }}>
+              <span>Actions per minute (at most)</span>
+              <input type="number" min={1} max={120} value={settings.computerUse.actionsPerMinute} onChange={(e) => void updateSettings((st) => ({ computerUse: { ...st.computerUse, actionsPerMinute: Math.max(1, Math.min(120, Number(e.target.value) || 30)) } }))} />
+            </label>
+            <label className="field" style={{ flex: "1 1 160px" }}>
+              <span>Steps per task (at most)</span>
+              <input type="number" min={5} max={500} value={settings.computerUse.maxSteps} onChange={(e) => void updateSettings((st) => ({ computerUse: { ...st.computerUse, maxSteps: Math.max(5, Math.min(500, Number(e.target.value) || 80)) } }))} />
+            </label>
+            <label className="field" style={{ flex: "1 1 160px" }}>
+              <span>Screenshots the model keeps seeing</span>
+              <input type="number" min={1} max={10} value={settings.computerUse.keepScreenshots} onChange={(e) => void updateSettings((st) => ({ computerUse: { ...st.computerUse, keepScreenshots: Math.max(1, Math.min(10, Number(e.target.value) || 3)) } }))} />
+            </label>
+          </div>
+        </div>
+      ) : p.desktop ? null : (
         <div className="note">
           {p.mobile
             ? "iPhone and iPad do not allow any app to run commands, control other apps or install software, so these tools exist only in the Windows (and macOS/Linux) app. Everything else works here, and files the assistant makes are saved to the Files app."
             : "Computer access needs the installed desktop app. It is not available in a browser."}
         </div>
       )}
+
+      <h4>Browser</h4>
+      <BrowserSettings />
 
       <h4>Web search</h4>
       <SearchKeys />

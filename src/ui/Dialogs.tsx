@@ -20,7 +20,24 @@ const RISK_NOTE: Record<string, string> = {
   computer: "This acts on your computer with your own permissions. Check it before allowing.",
   connectors: "This sends data to, or acts in, a service you connected.",
   web: "This contacts a web address that you did not type yourself.",
+  browser: "The assistant's own browser (separate from yours) will do this on the web.",
 };
+
+/** The latest screenshot with where the action will land. */
+function ActionPreview({ preview }: { preview: NonNullable<PermissionRequest["preview"]> }) {
+  const url = useBlobUrl(preview.blobId, "image/png");
+  if (!url) return null;
+  return (
+    <div className="action-preview" data-testid="action-preview">
+      <img src={url} alt="Where the action will happen" />
+      {preview.marks.map((m, i) => (
+        <span key={i} className="action-mark" style={{ left: `${(m.x / preview.width) * 100}%`, top: `${(m.y / preview.height) * 100}%` }} title={m.label}>
+          <span>{m.label}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
 
 /** An approval request, shown inside the chat (not as a popup), with every choice visible. */
 export function PermissionCard({ req }: { req: PermissionRequest }) {
@@ -38,9 +55,15 @@ export function PermissionCard({ req }: { req: PermissionRequest }) {
           <div className="perm-cmd">{req.detail}</div>
         </details>
       )}
+      {req.preview && <ActionPreview preview={req.preview} />}
       <p className="hint" style={{ margin: "6px 0 10px" }}>{RISK_NOTE[req.group] ?? "The assistant wants to run this tool."}</p>
       <div className="row wrap perm-actions">
         <button className="btn primary" autoFocus onClick={() => req.resolve("once")}>Allow once</button>
+        {req.allowTask && (
+          <button className="btn" onClick={() => req.resolve("task")} title="Don't ask again until this task ends (the next message asks again)">
+            Allow for this task
+          </button>
+        )}
         <button className="btn" onClick={() => req.resolve("always")} title={`Stop asking for ${req.title}. You can undo this in Settings → Tools.`}>
           Always allow “{req.title}”
         </button>

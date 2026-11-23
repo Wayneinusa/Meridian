@@ -442,3 +442,16 @@ textarea.mono { font: 12.5px/1.45 ui-monospace, Menlo, Consolas, monospace; }
 .grok-head { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; cursor: pointer; text-align: left; }
 .grok-head:hover { color: var(--text); }
 .grok-mark { font-weight: 700; font-size: 12.5px; }
+
+/* computer use: where the click lands */
+.action-preview { position: relative; margin: 8px 0 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); max-width: 560px; }
+.action-preview img { display: block; width: 100%; height: auto; }
+.action-mark { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 3px solid #e5484d; border-radius: 50%; box-shadow: 0 0 0 2px #fff; pointer-events: none; }
+.action-mark span { position: absolute; left: 30px; top: -2px; background: #e5484d; color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 6px; white-space: nowrap; }
+
+/* the assistant's browser, beside the chat */
+.browser-body { padding: 12px 14px; overflow: auto; display: grid; gap: 10px; align-content: start; }
+.browser-url { display: grid; gap: 2px; min-width: 0; }
+.browser-url span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.browser-body img { width: 100%; border: 1px solid var(--border); border-radius: 8px; }
+.engine-choice { display: grid; gap: 2px; }

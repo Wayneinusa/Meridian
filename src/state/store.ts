@@ -31,7 +31,9 @@ import { nativeTools } from "../connectors/native";
 import { bankTools } from "../connectors/banks";
 import { mcpManager } from "../tools/mcp";
 import { mediaModelFor, noMediaModelMessage } from "../tools/media";
-import type { Tool } from "../tools/types";
+import type { PermissionPreview, Tool } from "../tools/types";
+import { killComputerUse, rearmComputerUse } from "../tools/computer-use";
+import { closeSession, onBrowserView, type BrowserView } from "../browser/session";
 import type {
   Agent,
   BlobRef,
@@ -66,7 +68,11 @@ export interface PermissionRequest {
   group: Tool["group"];
   /** the tool call this is for, so the card can sit next to it in the chat */
   callId?: string;
-  resolve(decision: "deny" | "once" | "always"): void;
+  /** computer use: the screenshot with where the action lands */
+  preview?: PermissionPreview;
+  /** offer "Allow for this task" (computer use, browser) */
+  allowTask?: boolean;
+  resolve(decision: "deny" | "once" | "always" | "task"): void;
 }
 
 export interface QuestionRequest {
@@ -143,6 +149,9 @@ interface State {
   /** user message id whose versions are shown side by side */
   compareOpen: string | null;
   artifactsOpen: boolean;
+  /** the assistant's browser in each chat that used it (for the browser panel) */
+  browserViews: Record<string, BrowserView>;
+  browserOpen: boolean;
 }
 
 const emptyLib = (): LibState => ({ agents: [], projects: [], prompts: [], memories: [], plugins: [], automations: [] });
@@ -170,6 +179,8 @@ export const useApp = create<State>(() => ({
   showArchived: false,
   compareOpen: null,
   artifactsOpen: false,
+  browserViews: {},
+  browserOpen: false,
 }));
 
 const set = useApp.setState;
@@ -207,6 +218,16 @@ function refreshLib() {
   setPluginProviders(engineProviders(lib.plugins));
   set({ lib });
 }
+
+// the browser panel follows the assistant's browser
+onBrowserView((convId, view) => {
+  const views = { ...get().browserViews };
+  if (view) views[convId] = view;
+  else delete views[convId];
+  // open the panel the first time a chat's browser shows a page
+  const first = !!view && !get().browserViews[convId] && convId === get().activeId;
+  set({ browserViews: views, ...(first ? { browserOpen: true } : {}) });
+});
 
 setPluginEngineRunner((req, kind) => runPluginEngine(req, kind, { plugins: () => library.list("plugins"), getSecret: async (n) => getSecret(n) }));
 
@@ -360,6 +381,13 @@ export async function getKey(providerId: string): Promise<string> {
     if (p?.kind === "xai" && p.signedIn) return (await accessToken(XAI_TOKEN_ID)) ?? "";
   }
   return k;
+}
+
+/** Ctrl+Alt+Esc anywhere (desktop): stop every running task and block mouse/keyboard input at once. */
+export function emergencyStop() {
+  killComputerUse();
+  for (const id of Object.keys(get().busy)) stop(id);
+  toast("Stopped: computer use is blocked until you send a new message.", "info");
 }
 
 /** Sign in with X for Grok: in the browser (desktop) or with a code (any device). */
@@ -600,6 +628,7 @@ export const setTags = (id: string, tags: string[]) => withConv(id, (c) => void 
 
 export async function deleteChat(id: string) {
   stop(id);
+  void closeSession(id);
   const doomed = live.get(id) ?? (await repo.get(id));
   live.delete(id);
   if (privateIds.has(id)) {
@@ -683,12 +712,14 @@ const blobs: BlobAccess = {
 
 // ---------------------------------------------------------------- engine host
 
-function askPermission(convId: string, tool: Tool, input: Record<string, unknown>, callId?: string): Promise<"deny" | "once" | "always"> {
+function askPermission(convId: string, tool: Tool, input: Record<string, unknown>, callId?: string, preview?: PermissionPreview): Promise<"deny" | "once" | "always" | "task"> {
   return new Promise((resolve) => {
     const req: PermissionRequest = {
       id: uid("p"),
       convId,
       callId,
+      preview,
+      allowTask: !!tool.allowForTask,
       toolName: tool.spec.name,
       title: tool.title,
       summary: tool.summarize(input),
@@ -757,6 +788,7 @@ export const host: EngineHost = {
 // ---------------------------------------------------------------- sending
 
 export async function send(text: string, attachments: Part[] = [], opts: { compare?: ModelRef[] } = {}) {
+  rearmComputerUse();
   const trimmed = text.trim();
   if (!trimmed && !attachments.length) return;
   const c = ensureConversation();
@@ -815,6 +847,8 @@ export function stop(convId?: string | null) {
   const id = convId ?? get().activeId;
   if (!id) return;
   for (const [k, a] of aborts) if (k === id || k.startsWith(`${id}|`)) a.abort();
+  // Stop also halts any mouse/keyboard action in flight; the next message re-arms it
+  killComputerUse();
   for (const p of get().permissions.filter((x) => x.convId === id)) p.resolve("deny");
   for (const q of get().questions.filter((x) => x.convId === id)) q.resolve(null);
 }

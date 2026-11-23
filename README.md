@@ -16,7 +16,7 @@ A multi-provider AI workspace for **iPhone, iPad and Windows** from one codebase
 | **Banks** | Wells Fargo, American Express, Capital One and thousands of other banks, **read-only** (balances and transactions), through SimpleFIN Bridge or your own Plaid keys. Each bank has its own connector; the assistant asks before every read unless you allow it. |
 | **Connectors** | The services in Claude's directory with official MCP servers (Notion, Linear, Atlassian, Asana, monday.com, ClickUp, Airtable, Box, Dropbox, Canva, Figma, Miro, Webflow, GitHub, Sentry, Vercel, Netlify, Supabase, Cloudflare, Hugging Face, Stripe, PayPal, Square, Intercom, HubSpot, Fireflies, Granola, Zapier and more) with browser sign-in (OAuth 2.1, dynamic registration, PKCE). Google Workspace (Gmail, Calendar, Drive) and Microsoft 365 (Outlook, Calendar, OneDrive) built in. Search the public MCP registry, or add any server by address (HTTP, SSE, or a local command on desktop). |
 | **Automations** | Scheduled tasks (once, every N minutes, daily on chosen days, weekly, monthly) with an agent, project, model and tools; each run is a chat; catch-up for missed runs; notifications. On desktop the app can stay in the tray to run them. |
-| **Working like Cowork** | Approvals and questions appear **inside the chat** (Allow once / Always allow / Don't allow), never as a popup. A visible plan checklist, clarifying questions with choices, parallel sub-agents, a JavaScript sandbox for exact calculations, research mode (many searches, cited report), web search for every model (DuckDuckGo, Brave, Tavily, Exa or SearXNG; Claude uses Anthropic's search, Grok uses xAI's web and **X search**), files panel, HTML/SVG live preview. Desktop: shell, files, app installs (winget / Homebrew), screenshots and mouse/keyboard, each action approved. |
+| **Working like Cowork** | Approvals and questions appear **inside the chat** (Allow once / Always allow / Don't allow), never as a popup. A visible plan checklist, clarifying questions with choices, parallel sub-agents, a JavaScript sandbox for exact calculations, research mode (many searches, cited report), web search for every model (DuckDuckGo, Brave, Tavily, Exa or SearXNG; Claude uses Anthropic's search, Grok uses xAI's web and **X search**), files panel, HTML/SVG live preview. Desktop: shell, files, app installs (winget / Homebrew), **computer use** (see the screen and use the mouse and keyboard, step by step, every action approved by default), and **its own browser** (Meridian's Chromium or Firefox) to open pages, click, fill forms and extract data. |
 | **Chats** | Grok chats in their own collapsible section at the bottom of the list. Answer versions, compare up to four models side by side, retry with another model, edit and resend, fork, delete, quote in reply, private chats, archive, pin, move to project, full-text search, usage and cost page, auto titles, export to Markdown / PDF / Word / HTML / JSON, import from ChatGPT, Claude and TypingMind. |
 | **Voice** | Dictation (OpenAI, Groq, xAI or Gemini speech-to-text), read aloud (OpenAI or xAI voices, or the device voice), hands-free voice mode. |
 | **Files** | Reads images, PDFs, Word, Excel, PowerPoint, text and code; creates Excel with live formulas, PDF, Word, PowerPoint and any text file. |
@@ -33,7 +33,7 @@ Built and tested in a Linux container without provider API keys; the iOS and Win
 
 **Verified by running it**
 
-- `npm test`: 112 unit tests. Merge, backup and sync of chats and library items; document writers and readers; parameters per provider; streaming and tool calls; image and video requests for xAI, OpenAI, Google and OpenRouter; cold-model wake-up; knowledge search; plugin import (Claude zip, marketplace, TypingMind, skills) and runtime; connector sign-in (discovery, registration, PKCE, refresh) and registry search; automation schedules; ChatGPT/Claude/TypingMind import; Pollinations (free slot waiting, keyed models, async video jobs), AI Horde, Cloudflare, fal.ai, Runway and custom templates; TypingMind multi-function import and plugin engines; Google Drive and OneDrive sync between two devices against fake servers.
+- `npm test`: 125 unit tests, including the browser tool driving a real Chromium (pages, forms, Enter-to-submit, tabs, screenshots, HTTP login prompts) and the approval rules for computer use and the browser. Merge, backup and sync of chats and library items; document writers and readers; parameters per provider; streaming and tool calls; image and video requests for xAI, OpenAI, Google and OpenRouter; cold-model wake-up; knowledge search; plugin import (Claude zip, marketplace, TypingMind, skills) and runtime; connector sign-in (discovery, registration, PKCE, refresh) and registry search; automation schedules; ChatGPT/Claude/TypingMind import; Pollinations (free slot waiting, keyed models, async video jobs), AI Horde, Cloudflare, fal.ai, Runway and custom templates; TypingMind multi-function import and plugin engines; Google Drive and OneDrive sync between two devices against fake servers.
 - `npm run e2e`: 62 browser checks of the core app with providers mocked at the network layer, including Grok image creation, editing and image-to-video.
 - `node e2e/features.cjs`: 35 browser checks of agents, projects with knowledge, prompts and slash commands, memory, gallery plugins (HTTP and sandboxed JavaScript), a directory connector, questions, plans, parallel sub-agents, research mode, versions, compare, automations, private chats, search, export, import and usage.
 - `node e2e/media-sync.cjs`: 23 browser checks: free images with no keys (Pollinations, waiting for the free slot), the backend picker and its defaults, AI Horde, Pollinations video with a free key, a TypingMind multi-function plugin used as an image backend, and OneDrive sign-in with a code plus two-way sync.
@@ -85,6 +85,36 @@ Settings → Connectors → *Banking*: add **Wells Fargo**, **American Express**
 - **Plaid** (free within Plaid's limited plan, more setup): sign up at dashboard.plaid.com, get Production access for *Transactions*, paste the client ID and secret, press *Connect a bank* and sign in to the bank on Plaid's page.
 
 *Show my accounts* checks the connection. In chat, ask things like “what did I spend on restaurants at Capital One last month?”. The assistant asks before each read (*Allow once* / *Always allow*), unless you switch on *Run this connector's tools without asking*. The SimpleFIN address, Plaid keys and tokens stay in the keychain and are never synced.
+
+## Computer use and the assistant's browser
+
+Both are desktop features (Windows and macOS for computer use; Windows, macOS and Linux for the browser). They work with any model that can call tools; computer use also needs a model that can see images.
+
+### Computer use
+
+Switch on *Settings → Tools & computer → Let the assistant use this computer*. Then ask for a task on screen, such as “open Notepad and write a shopping list”.
+
+- The assistant works in a loop: it looks at a screenshot, picks one action (click, double or right click, move, drag, scroll, type, a key combination, wait, list or bring a window to the front), you approve it, it happens, and the next screenshot comes back. Every step is a card in the chat.
+- **Approval:** by default **every action asks first**, and the card shows the screenshot with a red ring where the click will land. *Settings → Tools & computer → Computer use → Ask before* can be changed to *risky actions only* (typing, shortcuts, drags, right and double clicks) or *nothing*. The card also has **Allow for this task**, which stops asking until your next message.
+- **Limits:** at most 30 actions a minute and 80 steps a task by default, both adjustable. Only the latest 3 screenshots are sent back to the model, to keep costs down.
+- **Kill switch:** *Stop*, *Esc*, or **Ctrl+Alt+Esc** anywhere (⌃⌥Esc on a Mac, even while another app is in front) stops the task at once. The mouse and keyboard stay blocked, in the app and in the native layer, until you send a new message.
+- macOS asks once for *Screen Recording* and *Accessibility* permission for Meridian (System Settings → Privacy & Security).
+
+### The assistant's browser
+
+*Settings → Tools & computer → Browser.*
+
+- **Which browser:** **Meridian's Chromium** (recommended) is downloaded once, about 150 MB, into Meridian's own folder. It is not installed system-wide, and the version is the same on every computer; *Update* downloads the current one. **Firefox** works too, if it is installed; Meridian drives it with the W3C WebDriver BiDi standard. Either way the browser runs with **its own profile**, so your own browser, logins and history are never touched.
+- **What it does:** open pages, read them as text in which every link, button and field is numbered (the model says “click 12”), click, type, choose from lists, fill whole forms, press keys, scroll, go back, use tabs, wait for text, take screenshots, extract the main text, tables and links, and answer a site's login prompt (HTTP authentication).
+- **Watching and taking over:** with *Show the browser window* on (the default) you see the window and can take over at any time. A panel beside the chat (the globe button in the chat's header) always shows the latest page.
+- **Approval:** reading never asks. These ask first by default:
+  - opening a site you did not name in the chat (and that no search in it found)
+  - submitting a form, including pressing Enter in one
+  - typing into a password or card-number field
+  - downloads and login prompts
+
+  *Ask before → Every action except reading the page* is stricter. *Sites it may open without asking* lists trusted sites, and **Allow for this task** works here too.
+- It fits the existing pieces. Research mode uses it for pages that need JavaScript or a sign-in, the plan checklist follows each page, and agents and automations can use it on a computer that is on.
 
 ## Free images and video
 
@@ -211,6 +241,8 @@ Sync and import both **merge**. Messages are combined by id, the later edit of a
 
 - **Keys** are kept in Windows Credential Manager or the Apple Keychain. (The Linux development build uses a private file; the browser build uses browser storage.)
 - **Computer tools** exist only in desktop builds and are off until switched on. Each call shows the exact command or path and waits for *Allow once*, *Always allow* or *Don't allow*. An auto-approve switch exists and is off by default.
+- **Computer use** asks before every mouse and keyboard action by default, shows where a click will land, is rate-limited, and has a kill switch (Stop, Esc, Ctrl+Alt+Esc) that the native layer enforces too.
+- **The assistant's browser** has its own profile, separate from yours. New sites, form submissions, password and card fields, downloads and login prompts ask first.
 - **Connector tools** ask before each call unless you mark the connector as trusted.
 - **Web fetches** to an address you did not type yourself, and that did not come from a web search in that chat, ask first, so a document or web page cannot quietly make the model send data elsewhere.
 - **Plugins**: JavaScript tools run in a sandboxed frame with no access to the app, its storage or keys; their network requests go through a bridge. Installing shows a warning when a plugin contains code or local commands.
@@ -222,6 +254,9 @@ Sync and import both **merge**. Messages are combined by id, the later edit of a
 iOS and iPadOS do not let any app run commands, control other apps or install software. On those devices Meridian does everything else, and saves files to the Files app.
 
 ## Known gaps
+
+- **Computer use and the browser on real machines:** the loop, approvals, kill switch and browser were tested in this Linux build machine: the browser tool against a real Chromium, and through the real desktop app. Mouse and keyboard on Windows and macOS have not been run on a device here. Firefox was tested against a protocol stand-in only, because Firefox could not be installed on the build machine.
+- **Background mode** for computer use (acting on app controls without moving your mouse) is the next step; for now computer use moves the real pointer.
 
 - **Google sign-in on iPhone/iPad**: Google only accepts its own URL scheme for iOS apps, so the Google Workspace *connector* signs in on Windows/Mac. (Google Drive *sync* uses a sign-in code and works on iPhone/iPad too.) Microsoft 365 and MCP connectors sign in on every device.
 - **Sign in with X** relies on the public client of xAI's Grok CLI (see above); xAI could limit it to its own apps. On iPhone/iPad only the code sign-in works, because the browser sign-in needs a fixed local address the phone cannot keep open.
@@ -243,7 +278,8 @@ src/
   providers/    anthropic.ts (official SDK), openai.ts, gemini.ts, xai.ts (Responses API, native search,
                 Sign in with X), media.ts (dispatch), backends.ts (Pollinations,
                 AI Horde, Cloudflare, fal.ai, Runway, custom templates), mediaUtil.ts, params.ts, wake.ts
-  tools/        files, media, web (fetch + search), computer, mcp, code sandbox, assistant tools
+  tools/        files, media, web (fetch + search), computer, computer-use, browser, mcp, code sandbox, assistant tools
+  browser/      the assistant's browser: transport, CDP + WebDriver BiDi drivers, page reader, sessions
   connectors/   catalog (directory + registry), oauth.ts (incl. device codes), native.ts (Google, Microsoft), banks.ts
   plugins/      import (Claude, TypingMind, JSON), runtime, engines (plugins as image/video backends), gallery
   automations/  schedule.ts, runner.ts

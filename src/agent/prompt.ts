@@ -39,6 +39,12 @@ export function buildSystemPrompt(p: PromptParts): string {
   if (names.has("web_search")) hints.push("Use web_search for anything recent or uncertain and cite the pages you relied on.");
   if (names.has("update_plan")) hints.push("For multi-step work, show your plan with update_plan and keep it current.");
   if (names.has("delegate")) hints.push("For big jobs with independent parts, you may hand parts to sub-agents with delegate (several at once run in parallel).");
+  if (names.has("browser")) {
+    hints.push(
+      "You have your own web browser (the browser tool), separate from the user's. Use it for pages that need JavaScript, clicking, forms or a sign-in; plain reading is cheaper with fetch_url. Keep the plan current while you browse (update_plan), one step per page or form.",
+    );
+  }
+  if (names.has("computer")) hints.push("You can see and use the user's screen with the computer tool. Work in small steps and check each new screenshot; prefer the browser tool for web pages.");
   if (tools.some((t) => t.spec.name.startsWith("mcp__"))) hints.push("Tools whose names start with mcp__ come from connectors the user added; they reach the user's own accounts and services.");
   if (hints.length) sections.push(hints.join("\n"));
   if (conv.mode === "research") {

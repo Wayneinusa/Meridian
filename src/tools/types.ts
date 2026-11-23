@@ -2,7 +2,7 @@ import type { ToolSpec } from "../providers/types";
 import type { Library } from "../storage/library";
 import type { BlobRef, Conversation, Part, PlanItem, Settings } from "../types";
 
-export type ToolGroup = "files" | "media" | "web" | "computer" | "connectors";
+export type ToolGroup = "files" | "media" | "web" | "computer" | "browser" | "connectors";
 
 export interface ToolOutput {
   text: string;
@@ -37,6 +37,14 @@ export interface ToolContext {
   runSubagent(task: string, label: string): Promise<string>;
 }
 
+/** A picture for the approval card: the latest screenshot with where the action lands. */
+export interface PermissionPreview {
+  blobId: string;
+  width: number;
+  height: number;
+  marks: { x: number; y: number; label?: string }[];
+}
+
 export interface Tool {
   spec: ToolSpec;
   group: ToolGroup;
@@ -47,4 +55,8 @@ export interface Tool {
   /** one-line human description of what this call will do, for the approval prompt */
   summarize(input: Record<string, unknown>): string;
   run(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolOutput>;
+  /** an image for the approval card (computer use: where the click lands) */
+  preview?(input: Record<string, unknown>, ctx: ToolContext): Promise<PermissionPreview | undefined>;
+  /** the approval card offers "Allow for this task" (computer use, browser) */
+  allowForTask?: boolean;
 }

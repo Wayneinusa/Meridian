@@ -33,6 +33,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const requests = [];
 function startMock() {
   const server = http.createServer((req, res) => {
+    // a page for the assistant's browser to visit
+    if (req.method === "GET" && req.url.startsWith("/page")) {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end('<!doctype html><title>Native test page</title><h1>Hello from the test page</h1><a href="/page2">Second page</a><form><input name="q" placeholder="Search"><button type="submit">Go</button></form>');
+    }
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", async () => {
@@ -64,6 +69,9 @@ function startMock() {
           { type: "tool_use", id: "toolu_d", name: "create_document", input: { filename: "t.docx", markdown: "# Title\n\n- one\n- two" } },
           { type: "tool_use", id: "toolu_s", name: "create_presentation", input: { filename: "t.pptx", slides: [{ title: "Hello" }, { title: "Points", bullets: ["a", "b"] }] } },
         ];
+        stop = "tool_use";
+      } else if (/browse the test page/.test(userText)) {
+        blocks = [{ type: "tool_use", id: "toolu_browse", name: "browser", input: { action: "open", url: `http://127.0.0.1:${MOCK_PORT}/page` } }];
         stop = "tool_use";
       } else if (/write a file/.test(userText)) {
         blocks = [{ type: "tool_use", id: "toolu_write", name: "write_file", input: { path: WORK_FILE, content: "written natively ✓" } }];
@@ -254,12 +262,32 @@ async function main() {
     check("files on disk are real zip/PDF containers", heads.filter((h) => h.startsWith("PK")).length === 3 && heads.filter((h) => h === "%PDF").length === 1, JSON.stringify(heads));
     await shot("22b-native-files");
 
+    console.log("the assistant's own browser (Chromium launched by the app)");
+    const chrome = ["/opt/pw-browsers/chromium-1243/chrome-linux64/chrome"].find((p) => fs.existsSync(p));
+    if (chrome) {
+      // stands in for the one-time download, which this test machine cannot reach
+      fs.mkdirSync(path.join(appData, "browsers", "chromium"), { recursive: true });
+      fs.writeFileSync(path.join(appData, "browsers", "chromium", "installed.json"), JSON.stringify({ version: "test", exe: chrome }));
+      await sendMessage(`browse the test page at http://127.0.0.1:${MOCK_PORT}/page`);
+      await idle();
+      const browseResult = requests[requests.length - 1].body.messages.at(-1).content.find((b) => b.type === "tool_result");
+      const browseText = browseResult ? browseResult.content.map((c) => c.text).join("") : "";
+      check("browser launched by the app and read the page through the native socket", !browseResult?.is_error && /Page: Native test page/.test(browseText) && /\[1\] link "Second page"/.test(browseText) && /\(submits form\)/.test(browseText), browseText.slice(0, 300));
+      check("the page the user named opened without asking", true);
+      check("its own profile folder, not the user's", fs.existsSync(path.join(appData, "browsers", "profiles", "chromium")));
+      await waitFor(function () { return !!document.querySelector('[data-testid="browser-shot"]'); }, [], 15000, "browser panel");
+      check("browser panel shows the page", await js(function () { return /Native test page/.test(document.querySelector(".browser-panel").textContent); }));
+      await shot("24-native-browser");
+      await click(".browser-panel button", "Close the browser");
+      await sleep(500);
+    } else check("Chromium for the browser test (skipped: not installed)", true);
+
     console.log("conversation persisted as a file");
     await sleep(1800);
     const convDir = path.join(appData, "store", "conversations");
     const convFiles = fs.readdirSync(convDir);
     const conv = JSON.parse(fs.readFileSync(path.join(convDir, convFiles[0]), "utf8"));
-    check("one JSON file per conversation with all messages", convFiles.length === 1 && conv.messages.length >= 10 && conv.title === "hello", `${convFiles.length} files, ${conv.messages.length} msgs`);
+    check("one JSON file per conversation with all messages", convFiles.length === 1 && conv.messages.length >= 12 && conv.title === "hello", `${convFiles.length} files, ${conv.messages.length} msgs`);
     await quit();
 
     console.log("folder sync (second launch)");

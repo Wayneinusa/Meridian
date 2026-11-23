@@ -15,7 +15,7 @@ import { runJavascript } from "../tools/code";
 import { computerTools } from "../tools/computer";
 import { extractText } from "../tools/extract";
 import { createMedia } from "../tools/media";
-import type { Tool, ToolContext } from "../tools/types";
+import type { PermissionPreview, Tool, ToolContext } from "../tools/types";
 import { validateInput } from "../tools/validate";
 import { searchTool } from "../tools/web";
 import type { Agent, BlobRef, Conversation, KnowledgeFile, Message, ModelRef, Part, PlanItem, Project, Settings, ToolResultData } from "../types";
@@ -34,7 +34,7 @@ export interface EngineHost {
   render(c: Conversation): void;
   save(c: Conversation, soon?: boolean): void | Promise<void>;
   setBusy(convId: string, note: string | null): void;
-  askPermission(convId: string, tool: Tool, input: Record<string, unknown>, callId?: string): Promise<"deny" | "once" | "always">;
+  askPermission(convId: string, tool: Tool, input: Record<string, unknown>, callId?: string, preview?: PermissionPreview): Promise<"deny" | "once" | "always" | "task">;
   ask(convId: string, question: string, options: string[], multiple: boolean): Promise<string | null>;
   allowAlways(toolName: string): Promise<void>;
   notice(text: string): void;
@@ -92,6 +92,35 @@ export function patchMessage(host: EngineHost, c: Conversation, messageId: strin
 
 const isAbort = (e: unknown) => e instanceof DOMException && e.name === "AbortError";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Screenshots pile up fast in a computer-use task. Keep the newest few as
+ * images; older ones are replaced by a note, so the context stays small.
+ */
+export function withRecentScreenshots(messages: Message[], keep: number): Message[] {
+  let seen = 0;
+  let changed = false;
+  const out = messages.slice();
+  for (let i = out.length - 1; i >= 0; i--) {
+    const m = out[i];
+    if (m.role !== "assistant") continue;
+    let touched = false;
+    const parts = [...m.parts].reverse().map((p) => {
+      if (p.type !== "tool_call" || !p.result?.images?.length || (p.name !== "computer" && p.name !== "browser")) return p;
+      if (seen < keep) {
+        seen++;
+        return p;
+      }
+      touched = true;
+      return { ...p, result: { ...p.result, images: undefined, text: `${p.result.text} [older screenshot omitted]` } };
+    });
+    if (touched) {
+      changed = true;
+      out[i] = { ...m, parts: parts.reverse() };
+    }
+  }
+  return changed ? out : messages;
+}
 
 /** Paths the user has handed over for this chat: tools inside it run without asking. */
 function insideFolder(path: unknown, folder: string): boolean {
@@ -153,8 +182,10 @@ async function assembleTools(host: EngineHost, c: Conversation, settings: Settin
 
 export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptions): Promise<void> {
   const depth = opts.depth ?? 0;
-  const maxSteps = Math.max(1, opts.maxSteps ?? (c.mode === "research" ? Math.max(host.settings().maxAgentSteps, 80) : host.settings().maxAgentSteps));
+  let maxSteps = Math.max(1, opts.maxSteps ?? (c.mode === "research" ? Math.max(host.settings().maxAgentSteps, 80) : host.settings().maxAgentSteps));
   let assistantId: string | null = null;
+  /** tools the user allowed "for this task" on an approval card: they stop asking until the turn ends */
+  const taskAllowed = new Set<string>();
   try {
     for (let step = 0; ; step++) {
       const settings = host.settings();
@@ -224,7 +255,9 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
         subagent: depth > 0,
       });
       const params = supportedParams({ ...resolveParams(settings, ref, c), ...(agent?.params ?? {}), ...(c.params ?? {}) }, provider.kind, model);
-      let history = c.messages;
+      // a task on the screen or in the browser takes many small steps: give it the computer-use budget
+      if (!opts.maxSteps && tools.some((t) => t.spec.name === "computer" || t.spec.name === "browser")) maxSteps = Math.max(maxSteps, settings.computerUse?.maxSteps ?? 80);
+      let history = withRecentScreenshots(c.messages, settings.computerUse?.keepScreenshots ?? 3);
       if (params.contextMessages && history.length > params.contextMessages) {
         let start = history.length - params.contextMessages;
         while (start > 0 && history[start].role !== "user") start--;
@@ -295,11 +328,13 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
           } else {
             let allowed = true;
             const s = host.settings();
-            const pre = opts.autoApprove || s.alwaysAllow.includes(tool.spec.name) || (tool.group === "computer" && s.autoApproveComputer);
+            const pre = opts.autoApprove || s.alwaysAllow.includes(tool.spec.name) || taskAllowed.has(tool.spec.name) || (tool.group === "computer" && s.autoApproveComputer);
             if (tool.needsApproval(input, ctx) && !pre) {
               host.setBusy(c.id, "waiting for your OK");
-              const decision = await host.askPermission(c.id, tool, input, call.id);
+              const preview = tool.preview ? await tool.preview(input, ctx).catch(() => undefined) : undefined;
+              const decision = await host.askPermission(c.id, tool, input, call.id, preview);
               if (decision === "always") await host.allowAlways(tool.spec.name);
+              if (decision === "task") taskAllowed.add(tool.spec.name);
               allowed = decision !== "deny";
             }
             if (opts.signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -430,7 +465,7 @@ async function runSubagent(host: EngineHost, parent: Conversation, task: string,
     render: () => undefined,
     save: () => undefined,
     setBusy: (_id, note) => note && host.setBusy(parent.id, `${label}: ${note}`),
-    askPermission: (_id, tool, input) => host.askPermission(parent.id, tool, input),
+    askPermission: (_id, tool, input, _call, preview) => host.askPermission(parent.id, tool, input, undefined, preview),
     ask: (_id, q, o, m) => host.ask(parent.id, q, o, m),
   };
   await runTurn(subHost, sub, { ...opts, depth: depth + 1, maxSteps: 25, onAssistant: undefined });

@@ -1,6 +1,15 @@
 # Agent roadmap: computer use, browser agent, and what follows
 
-Status: **proposal, waiting for confirmation**. Nothing in this document is built yet.
+Status:
+
+- **Built:** 1 (computer use, foreground) and 2 (the browser agent).
+- **Next, in order:** 3 to 9.
+
+Decisions from the owner:
+- Bundled Chromium, plus a Firefox option.
+- Computer use asks before every action by default, and that can be changed.
+- Remote worker: both self-hosted and hosted.
+- X tools: both the official X API (your own developer app) and Grok's built-in `x_search`.
 
 ## Where things stand
 
@@ -128,7 +137,12 @@ Each step is one commit series, shippable on its own, with tests and README.
 8. X tools and real-time research.
 9. Remote worker and Dispatch.
 
-## Questions before starting
+## Questions before starting (answered)
+
+The answers are in *Status* at the top. Notes on what was built:
+
+- **The bundled Chromium is downloaded on first use rather than shipped inside the installer.** It is Chrome for Testing, pinned to one version and kept in Meridian's own folder. Shipping it inside would add about 150 MB to every install and every update, including on iPhone, where it could not run.
+- **Firefox is the copy installed on the computer, run with Meridian's own profile.** Firefox's only official downloads are installers, not a portable build Meridian could manage.
 
 1. **Browser:** use the installed Edge/Chrome over CDP (no extra download, what this plan assumes), or bundle a Chromium (about 150 MB more per install, same version everywhere)?
 2. **Computer-use default:** "Ask for every action" (safest, what this plan assumes) or "Ask for risky actions"?

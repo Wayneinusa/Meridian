@@ -4,6 +4,7 @@
 //
 // Every one of these asks the user first unless they chose "always allow"
 // for that tool or switched on auto-approve in Settings.
+import { computerUseTool } from "./computer-use";
 import { invoke, platform } from "../platform";
 import { base64ToBytes, bytesToBase64, formatBytes, mimeFromName, safeFileName } from "../util/bytes";
 import type { Tool, ToolOutput } from "./types";
@@ -251,83 +252,12 @@ const saveGenerated: Tool = {
   },
 };
 
-interface Shot {
-  png_b64: string;
-  width: number;
-  height: number;
-  screen_width: number;
-  screen_height: number;
-}
-
-const screenshot: Tool = {
-  group: "computer",
-  title: "Take screenshot",
-  spec: {
-    name: "take_screenshot",
-    description:
-      "Capture the user's main screen and look at it. Use it to see what is on screen before and after using computer_input. " +
-      "Coordinates for computer_input are in the pixel space of the most recent screenshot.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  needsApproval: always,
-  summarize: () => "Take a screenshot of the screen",
-  async run(_input, ctx) {
-    const shot = await invoke<Shot>("screenshot");
-    const ref = await ctx.saveBlob(base64ToBytes(shot.png_b64), "image/png", `screenshot-${Date.now().toString(36)}.png`);
-    return {
-      text: `Screenshot captured: ${shot.width}x${shot.height} pixels (screen is ${shot.screen_width}x${shot.screen_height}). Use coordinates within ${shot.width}x${shot.height}.`,
-      images: [ref],
-    };
-  },
-};
-
-const computerInput: Tool = {
-  group: "computer",
-  title: "Mouse and keyboard",
-  spec: {
-    name: "computer_input",
-    description:
-      "Control the mouse and keyboard of the user's computer. Take a screenshot first, act, then take another screenshot to check the result. " +
-      "Actions: move, click, double_click, right_click (need x and y in screenshot pixels); scroll (x, y and dy: positive scrolls down); " +
-      "type (text: types the string); key (keys: a combination such as 'ctrl+s', 'alt+tab', 'enter', 'win').",
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["move", "click", "double_click", "right_click", "scroll", "type", "key"] },
-        x: { type: "integer" },
-        y: { type: "integer" },
-        dy: { type: "integer", description: "Scroll amount in notches; positive is down" },
-        text: { type: "string" },
-        keys: { type: "string" },
-      },
-      required: ["action"],
-    },
-  },
-  needsApproval: always,
-  summarize: (i) => {
-    const a = String(i.action);
-    if (a === "type") return `Type "${String(i.text ?? "").slice(0, 60)}"`;
-    if (a === "key") return `Press ${String(i.keys)}`;
-    return `${a.replace("_", " ")} at (${i.x}, ${i.y})`;
-  },
-  async run(input) {
-    await invoke("input_action", {
-      action: String(input.action),
-      x: typeof input.x === "number" ? input.x : null,
-      y: typeof input.y === "number" ? input.y : null,
-      dy: typeof input.dy === "number" ? input.dy : null,
-      text: typeof input.text === "string" ? input.text : null,
-      keys: typeof input.keys === "string" ? input.keys : null,
-    });
-    return { text: "Done. Take a screenshot to see the result." };
-  },
-};
-
 export function computerTools(): Tool[] {
   const p = platform();
   if (!p.desktop) return [];
   const tools = [runCommand, readFile, writeFile, listDirectory, searchApps, installApp, openTarget, saveGenerated];
-  if (p.canControlScreen) tools.push(screenshot, computerInput);
+  // one tool for looking at and acting on the screen (it replaced take_screenshot + computer_input)
+  if (p.canControlScreen) tools.push(computerUseTool(p.os));
   return tools;
 }
 

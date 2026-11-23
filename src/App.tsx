@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { startAutomations } from "./automations/runner";
 import { startBackground } from "./platform/background";
-import { init, useApp } from "./state/store";
+import { registerKillSwitch } from "./platform/killswitch";
+import { emergencyStop, init, useApp } from "./state/store";
 import { Chat } from "./ui/Chat";
 import { PreviewDialog, Toasts } from "./ui/Dialogs";
 import { AgentsPage } from "./ui/pages/Agents";
@@ -29,6 +30,7 @@ export function App() {
     started = true;
     init()
       .then(() => startBackground())
+      .then(() => registerKillSwitch(emergencyStop))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 

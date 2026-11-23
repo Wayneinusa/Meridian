@@ -4,6 +4,7 @@ import { pickFolder } from "../platform/files";
 import { exportChat, forkChat, keepPrivateChat, send, setChatAgent, setResearchMode, setView, setWorkFolder, useApp } from "../state/store";
 import type { Message } from "../types";
 import { ArtifactsPanel } from "./Artifacts";
+import { BrowserPanel } from "./BrowserPanel";
 import { ChatPrompts, WaitingElsewhere } from "./Dialogs";
 import { Composer } from "./Composer";
 import { Icon } from "./icons";
@@ -128,6 +129,8 @@ export function Chat() {
   const sidebarOpen = useApp((s) => s.sidebarOpen);
   const paramsOpen = useApp((s) => s.paramsOpen);
   const artifactsOpen = useApp((s) => s.artifactsOpen);
+  const browserOpen = useApp((s) => s.browserOpen);
+  const hasBrowser = useApp((s) => !!(s.activeId && s.browserViews[s.activeId]));
   const incognito = useApp((s) => s.incognito);
   const compareOpen = useApp((s) => s.compareOpen);
   const project = useApp((s) => s.lib.projects.find((p) => p.id === (s.active ? s.active.projectId : s.draft.projectId)));
@@ -182,6 +185,11 @@ export function Chat() {
           {active?.workFolder && <span className="chip-btn on" title={active.workFolder}><Icon.folder /> {active.workFolder.split(/[\\/]/).pop()}</span>}
         </div>
         <ModelPicker />
+        {hasBrowser && (
+          <button className={`icon-btn ${browserOpen ? "on" : ""}`} title="The assistant's browser" onClick={() => useApp.setState({ browserOpen: !browserOpen, artifactsOpen: false })}>
+            <Icon.globe />
+          </button>
+        )}
         <button className={`icon-btn ${artifactsOpen ? "on" : ""}`} title="Files in this chat" onClick={() => useApp.setState({ artifactsOpen: !artifactsOpen })}>
           <Icon.file />
         </button>
@@ -261,6 +269,7 @@ export function Chat() {
           <Composer />
         </div>
         {artifactsOpen && <ArtifactsPanel />}
+        {browserOpen && hasBrowser && !artifactsOpen && <BrowserPanel />}
       </div>
       {paramsOpen && <ParamsPanel />}
     </main>

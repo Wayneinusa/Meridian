@@ -1,4 +1,6 @@
 import type { ModelInfo, Settings } from "../types";
+import { platform } from "../platform";
+import { browserTool } from "./browser";
 import { computerTools } from "./computer";
 import { fileTools } from "./files";
 import { mcpManager } from "./mcp";
@@ -22,6 +24,8 @@ export async function activeTools(settings: Settings, model: ModelInfo): Promise
   }
   if (t.web) out.push(...webTools);
   if (t.computer) out.push(...computerTools());
+  // the assistant's own browser: desktop app only
+  if (t.browser && platform().desktop) out.push(browserTool);
   if (t.connectors && settings.mcpServers.some((s) => s.enabled)) out.push(...(await mcpManager.tools(settings.mcpServers)));
   return out;
 }

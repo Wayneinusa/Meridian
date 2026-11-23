@@ -3,12 +3,14 @@
 //! - files anywhere on disk (the app's own store, sync folders, and - on
 //!   desktop, after the user approves each call in the UI - the user's files)
 //! - shell commands, app launching and installs (desktop only)
-//! - screenshots and mouse/keyboard (Windows and macOS)
+//! - screenshots and mouse/keyboard (Windows and macOS), with a kill switch
+//! - the assistant's own browser (managed Chromium or Firefox, separate profile)
 //! - the OS credential store for API keys
 //! - local MCP servers over stdio (desktop only)
 //! - the iCloud container (iOS, iPadOS, macOS)
 
 mod background;
+mod browser;
 mod fs_cmds;
 mod icloud;
 mod mcp;
@@ -20,8 +22,13 @@ mod shell;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // the computer-use kill switch (a global shortcut) exists on desktop only
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    builder
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_websocket::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
@@ -29,6 +36,7 @@ pub fn run() {
         .manage(oauth::OAuthState::default())
         .manage(mcp::McpState::default())
         .manage(screen::ScreenState::default())
+        .manage(browser::BrowserState::default())
         .invoke_handler(tauri::generate_handler![
             platform::platform_info,
             fs_cmds::fs_read_text,
@@ -48,6 +56,13 @@ pub fn run() {
             mcp::mcp_stdio_stop,
             screen::screenshot,
             screen::input_action,
+            screen::list_windows,
+            screen::computer_kill,
+            browser::browser_status,
+            browser::browser_install_chromium,
+            browser::browser_remove_chromium,
+            browser::browser_launch,
+            browser::browser_close,
             icloud::icloud_prepare,
             oauth::oauth_listen,
             oauth::oauth_wait,
