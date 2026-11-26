@@ -1,0 +1,31 @@
+job: test
+result: success
+--- errors
+[2m Test Files [22m [1m[32m21 passed[39m[22m[90m (21)[39m
+[2m      Tests [22m [1m[32m171 passed[39m[22m[90m (171)[39m
+--- last lines
+transforming...
+✓ 892 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                      0.48 kB │ gzip:   0.30 kB
+dist/assets/pdf.worker.min-CIqJB0yW.mjs          1,271.91 kB
+dist/assets/index-CK03nFc5.css                      35.01 kB │ gzip:   7.59 kB
+dist/assets/pdf.worker.min-UqOn5EDC.js               0.06 kB │ gzip:   0.08 kB
+dist/assets/__vite-browser-external-yUTr53S7.js      0.09 kB │ gzip:   0.10 kB
+dist/assets/node.browser-DaOOGWDl.js                 0.26 kB │ gzip:   0.22 kB
+dist/assets/dist-js-BAvKEZ4C.js                      0.53 kB │ gzip:   0.25 kB
+dist/assets/dist-js-CzEAmLMw.js                      0.88 kB │ gzip:   0.51 kB
+dist/assets/node.browser-uNTCLJif.js                 1.82 kB │ gzip:   0.70 kB
+dist/assets/dist-C-Qc3D-X.js                       282.17 kB │ gzip:  83.76 kB
+dist/assets/mammoth.browser-BLIjlyow.js            298.50 kB │ gzip:  87.82 kB
+dist/assets/pptxgen.es-BiVmLLbQ.js                 368.41 kB │ gzip: 123.25 kB
+dist/assets/pdf-YwugTw7Y.js                        444.23 kB │ gzip: 133.64 kB
+dist/assets/pdfmake-D87E9UQy.js                    771.02 kB │ gzip: 289.14 kB
+dist/assets/vfs_fonts-BdcpqJm9.js                  854.70 kB │ gzip: 468.58 kB
+dist/assets/exceljs.min-BicC-K34.js                929.38 kB │ gzip: 256.36 kB
+dist/assets/index-nqKPJTpK.js                    1,592.45 kB │ gzip: 460.25 kB
+
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0mnode_modules/@tauri-apps/api/event.js is dynamically imported by src/browser/session.ts but also statically imported by node_modules/@tauri-apps/plugin-deep-link/dist-js/index.js, src/tools/mcp.ts, dynamic import will not move module into another chunk.
+[39m
+[32m✓ built in 842ms[39m

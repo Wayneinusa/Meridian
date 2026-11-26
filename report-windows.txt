@@ -1,0 +1,50 @@
+job: windows
+result: success
+--- errors
+--- rust error context
+--- last lines of the build log
+✓ 892 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                      0.49 kB │ gzip:   0.30 kB
+dist/assets/pdf.worker.min-CIqJB0yW.mjs          1,271.91 kB
+dist/assets/index-CK03nFc5.css                      35.01 kB │ gzip:   7.59 kB
+dist/assets/pdf.worker.min-UqOn5EDC.js               0.06 kB │ gzip:   0.08 kB
+dist/assets/__vite-browser-external-DZzZZXAR.js      0.09 kB │ gzip:   0.10 kB
+dist/assets/node.browser-CyYE3OMy.js                 0.26 kB │ gzip:   0.22 kB
+dist/assets/dist-js-DZV7wtlX.js                      0.53 kB │ gzip:   0.25 kB
+dist/assets/dist-js-dE47WXXM.js                      0.88 kB │ gzip:   0.51 kB
+dist/assets/node.browser-JWi2dSM2.js                 1.82 kB │ gzip:   0.70 kB
+dist/assets/dist-C-Qc3D-X.js                       282.17 kB │ gzip:  83.76 kB
+dist/assets/mammoth.browser-msxVEInI.js            298.50 kB │ gzip:  87.82 kB
+dist/assets/pptxgen.es-_GIwHfi3.js                 368.41 kB │ gzip: 123.25 kB
+dist/assets/pdf-YwugTw7Y.js                        444.23 kB │ gzip: 133.64 kB
+dist/assets/pdfmake-BwwrisQ7.js                    771.02 kB │ gzip: 289.14 kB
+dist/assets/vfs_fonts-10MYzq7f.js                  854.70 kB │ gzip: 468.58 kB
+dist/assets/exceljs.min-B7C1e4jy.js                929.38 kB │ gzip: 256.36 kB
+dist/assets/index-4wFDWkGP.js                    1,592.46 kB │ gzip: 460.26 kB
+
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0mnode_modules/@tauri-apps/api/event.js is dynamically imported by src/browser/session.ts but also statically imported by node_modules/@tauri-apps/plugin-deep-link/dist-js/index.js, src/tools/mcp.ts, dynamic import will not move module into another chunk.
+[39m
+[32m✓ built in 997ms[39m
+[1m[92m    Updating[0m crates.io index
+[1m[92m   Compiling[0m meridian v0.1.0 (D:\a\Meridian\Meridian\src-tauri)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 3m 02s
+       Built application at: D:\a\Meridian\Meridian\src-tauri\target\release\meridian.exe
+        Info Patching D:\a\Meridian\Meridian\src-tauri\target\release\meridian.exe with bundle type information: nsis
+        Info Verifying NSIS package
+ Downloading https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.13/nsis-3.13.zip
+        Info validating hash
+        Info extracting NSIS
+ Downloading https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll
+        Info validating hash
+        Info Target: x64
+     Running makensis to produce D:\a\Meridian\Meridian\src-tauri\target\release\bundle\nsis\Meridian_0.2.26_x64-setup.exe
+    Finished 1 bundle at:
+        D:\a\Meridian\Meridian\src-tauri\target\release\bundle\nsis\Meridian_0.2.26_x64-setup.exe (4.50 MiB)
+
+--- package
+total 4612
+drwxr-xr-x 1 runneradmin 197121       0 Nov 26 15:59 .
+drwxr-xr-x 1 runneradmin 197121       0 Nov 26 15:59 ..
+-rwxr-xr-x 1 runneradmin 197121 4722239 Nov 26 15:59 Meridian_0.2.26_x64-setup.exe
