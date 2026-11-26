@@ -397,8 +397,8 @@ export function emergencyStop() {
 }
 
 /** Sign in with X for Grok: in the browser (desktop) or with a code (any device). */
-export async function signInGrok(providerId: string, mode: "browser" | "device", onCode?: (c: DeviceCode) => void, signal?: AbortSignal) {
-  const tokens = await signInWithX(mode, onCode, signal);
+export async function signInGrok(providerId: string, mode: "browser" | "device", onCode?: (c: DeviceCode) => void, signal?: AbortSignal, manual?: Promise<string>) {
+  const tokens = await signInWithX(mode, onCode, signal, manual);
   const who = accountFromTokens(tokens);
   await updateSettings((s) => ({ providers: s.providers.map((p) => (p.id === providerId ? { ...p, signedIn: true, signedInAs: who } : p)) }));
   try {

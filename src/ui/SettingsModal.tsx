@@ -49,19 +49,29 @@ function Toggle({ checked, onChange, label, hint, disabled }: { checked: boolean
 function XSignIn({ provider }: { provider: ProviderConfig }) {
   const [code, setCode] = useState<DeviceCode | null>(null);
   const [busy, setBusy] = useState(false);
+  const [inBrowser, setInBrowser] = useState(false);
+  const [pasted, setPasted] = useState("");
   const abort = useRef<AbortController | null>(null);
+  const manual = useRef<{ resolve: (v: string) => void; reject: (e: unknown) => void } | null>(null);
   const desktop = platform().desktop;
   const go = async (mode: "browser" | "device") => {
     setBusy(true);
     abort.current = new AbortController();
+    // xAI's page sometimes shows the code instead of returning it: the user can paste it here
+    const pastedCode = new Promise<string>((resolve, reject) => (manual.current = { resolve, reject }));
+    pastedCode.catch(() => undefined);
+    if (mode === "browser") setInBrowser(true);
     try {
-      await signInGrok(provider.id, mode, setCode, abort.current.signal);
+      await signInGrok(provider.id, mode, setCode, abort.current.signal, mode === "browser" ? pastedCode : undefined);
       toast("Signed in with X. Grok now uses your subscription.", "ok");
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) toast(`Sign in with X: ${errText(e)}`, "error");
     } finally {
       setBusy(false);
       setCode(null);
+      setInBrowser(false);
+      setPasted("");
+      manual.current = null;
     }
   };
   return (
@@ -79,6 +89,17 @@ function XSignIn({ provider }: { provider: ProviderConfig }) {
           Open <b>{code.verification_url}</b> and enter <code data-testid="x-device-code" style={{ fontSize: 17, letterSpacing: 1.5 }}>{code.user_code}</code>{" "}
           <button className="btn small" onClick={() => void openExternal(code.verification_url_complete ?? code.verification_url)}>Open page</button>{" "}
           <button className="btn small" onClick={() => abort.current?.abort()}>Cancel</button>
+        </div>
+      ) : inBrowser ? (
+        <div className="note" role="status" data-testid="x-paste">
+          <div style={{ marginBottom: 6 }}>
+            Finish on xAI's page in your browser. If it shows <b>“Enter this code to finish signing in”</b>, copy that code and paste it here:
+          </div>
+          <div className="row">
+            <input type="text" spellCheck={false} autoComplete="off" value={pasted} onChange={(e) => setPasted(e.target.value)} placeholder="Paste the code from xAI's page" aria-label="Code from xAI" />
+            <button className="btn primary" disabled={!pasted.trim()} onClick={() => manual.current?.resolve(pasted.trim())}>Finish signing in</button>
+            <button className="btn" onClick={() => manual.current?.reject(new DOMException("Aborted", "AbortError"))}>Cancel</button>
+          </div>
         </div>
       ) : provider.signedIn ? (
         <button className="btn small" onClick={() => void signOutGrok(provider.id).then(() => toast("Signed out of X.", "ok"))}>Sign out</button>

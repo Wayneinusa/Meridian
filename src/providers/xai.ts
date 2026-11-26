@@ -40,7 +40,7 @@ type Json = Record<string, any>;
 
 // ---------------------------------------------------------------- sign-in
 
-export async function signInWithX(mode: "browser" | "device", onCode?: (c: DeviceCode) => void, signal?: AbortSignal): Promise<OAuthTokens> {
+export async function signInWithX(mode: "browser" | "device", onCode?: (c: DeviceCode) => void, signal?: AbortSignal, manual?: Promise<string>): Promise<OAuthTokens> {
   let tokens: OAuthTokens;
   if (mode === "device") {
     tokens = await deviceSignIn({ deviceEndpoint: XAI_DEVICE, tokenEndpoint: XAI_TOKEN, clientId: XAI_CLIENT_ID, scopes: XAI_SCOPES, onCode: onCode ?? (() => undefined), signal, extra: { referrer: CLIENT_NAME } });
@@ -52,6 +52,8 @@ export async function signInWithX(mode: "browser" | "device", onCode?: (c: Devic
       scopes: XAI_SCOPES,
       extraAuthParams: { nonce },
       redirect: await redirectChannel(XAI_REDIRECT_PORT),
+      // xAI's page may show the code instead of handing it back: the user pastes it
+      manual,
     });
   }
   await saveTokens(XAI_TOKEN_ID, tokens);

@@ -66,6 +66,7 @@ pub fn run() {
             icloud::icloud_prepare,
             oauth::oauth_listen,
             oauth::oauth_wait,
+            oauth::oauth_cancel,
             background::set_background,
         ])
         .on_window_event(|window, event| {

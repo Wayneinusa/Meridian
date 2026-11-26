@@ -117,7 +117,14 @@ export async function registerClient(server: AuthServer, redirectUri: string): P
 }
 
 /** Where the browser comes back to, and a way to wait for it. */
-export async function redirectChannel(fixedPort?: number): Promise<{ uri: string; wait: () => Promise<string> }> {
+export interface RedirectChannel {
+  uri: string;
+  wait: () => Promise<string>;
+  /** stop listening (the code was pasted instead) */
+  cancel?: () => void;
+}
+
+export async function redirectChannel(fixedPort?: number): Promise<RedirectChannel> {
   if (!isTauri) throw new Error("Signing in to connectors needs the installed app.");
   if (platform().mobile) {
     const uri = "meridian://oauth/callback";
@@ -137,7 +144,7 @@ export async function redirectChannel(fixedPort?: number): Promise<{ uri: string
     };
   }
   const port = await invoke<number>("oauth_listen", fixedPort ? { port: fixedPort } : {});
-  return { uri: `http://127.0.0.1:${port}/callback`, wait: () => invoke<string>("oauth_wait", { port }) };
+  return { uri: `http://127.0.0.1:${port}/callback`, wait: () => invoke<string>("oauth_wait", { port }), cancel: () => void invoke("oauth_cancel", { port }).catch(() => undefined) };
 }
 
 export interface SignInOptions {
@@ -152,10 +159,29 @@ export interface SignInOptions {
   extraAuthParams?: Record<string, string>;
   /** how to show the sign-in page */
   open?: (url: string) => Promise<void>;
-  redirect?: { uri: string; wait: () => Promise<string> };
+  redirect?: RedirectChannel;
+  /**
+   * What the user pasted when the sign-in page shows a code instead of coming
+   * back on its own: the code by itself, or the whole address it tried to open.
+   */
+  manual?: Promise<string>;
+}
+
+/**
+ * A pasted sign-in result as a redirect address. A bare code gets this attempt's
+ * state: PKCE still binds it, since only this attempt holds the code verifier.
+ */
+export function manualRedirect(input: string, redirectUri: string, state: string): string {
+  const v = input.trim();
+  if (/^https?:\/\//i.test(v)) return v;
+  if (/[?&]code=/.test(v) || /^code=/.test(v)) return `${redirectUri}?${v.replace(/^[^?]*\?/, "")}`;
+  if (!/^[A-Za-z0-9._~+/=-]{8,}$/.test(v)) throw new Error("That does not look like a sign-in code. Copy the whole code from the sign-in page.");
+  return `${redirectUri}?code=${encodeURIComponent(v)}&state=${encodeURIComponent(state)}`;
 }
 
 export async function signIn(opts: SignInOptions): Promise<OAuthTokens> {
+  // the user may cancel the paste box before the race below is set up
+  opts.manual?.catch(() => undefined);
   const found = opts.server ? { server: opts.server, scopes: opts.scopes } : await discover(opts.resource!, opts.resourceMetadataUrl);
   const redirect = opts.redirect ?? (await redirectChannel());
   const client = opts.clientId ? { client_id: opts.clientId, client_secret: opts.clientSecret } : await registerClient(found.server, redirect.uri);
@@ -176,7 +202,24 @@ export async function signIn(opts: SignInOptions): Promise<OAuthTokens> {
   if (opts.resource) params.resource = opts.resource;
   for (const [k, v] of Object.entries(params)) auth.searchParams.set(k, v);
   await (opts.open ?? openExternal)(auth.toString());
-  const back = new URL(await redirect.wait());
+  const back = new URL(
+    opts.manual
+      ? await Promise.race([
+          redirect.wait(),
+          opts.manual.then(
+            (input) => {
+              redirect.cancel?.();
+              return manualRedirect(input, redirect.uri, state);
+            },
+            (e) => {
+              // cancelled: free the loopback port too
+              redirect.cancel?.();
+              throw e;
+            },
+          ),
+        ])
+      : await redirect.wait(),
+  );
   if (back.searchParams.get("error")) throw new Error(`Sign-in was not completed: ${back.searchParams.get("error_description") ?? back.searchParams.get("error")}`);
   if (back.searchParams.get("state") !== state) throw new Error("Sign-in failed a security check (state mismatch). Try again.");
   const code = back.searchParams.get("code");

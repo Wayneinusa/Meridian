@@ -223,3 +223,54 @@ describe("banks", () => {
     expect(paths).toEqual(["/link/token/get", "/link/token/get", "/item/public_token/exchange"]);
   });
 });
+
+import { manualRedirect, signIn } from "../src/connectors/oauth";
+
+describe("pasting the code when the sign-in page shows it", () => {
+  it("turns a bare code, a query or a full address into the redirect", () => {
+    expect(manualRedirect("ot26g20rf3A-juMFb_Jhr", "http://127.0.0.1:56121/callback", "st1")).toBe("http://127.0.0.1:56121/callback?code=ot26g20rf3A-juMFb_Jhr&state=st1");
+    expect(manualRedirect("http://127.0.0.1:56121/callback?code=a&state=b", "x", "y")).toBe("http://127.0.0.1:56121/callback?code=a&state=b");
+    expect(manualRedirect("code=a&state=b", "http://h/cb", "y")).toBe("http://h/cb?code=a&state=b");
+    expect(() => manualRedirect("hello there!", "http://h/cb", "y")).toThrow(/sign-in code/);
+  });
+
+  it("finishes the browser sign-in with a pasted code (PKCE verifier from this attempt)", async () => {
+    const bodies: URLSearchParams[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      bodies.push(new URLSearchParams(init.body as string));
+      return Response.json({ access_token: "AT", refresh_token: "RT", expires_in: 3600, id_token: "x.eyJlbWFpbCI6ImFAYi5jIn0.y" });
+    });
+    let cancelled = false;
+    let opened = "";
+    const t = await signIn({
+      server: { authorization_endpoint: "https://auth.x.ai/oauth2/authorize", token_endpoint: "https://auth.x.ai/oauth2/token" },
+      clientId: XAI_CLIENT_ID,
+      scopes: ["openid"],
+      open: async (u) => void (opened = u),
+      // the loopback never hears back (the page showed the code instead)
+      redirect: { uri: "http://127.0.0.1:56121/callback", wait: () => new Promise<string>(() => undefined), cancel: () => void (cancelled = true) },
+      manual: Promise.resolve("PASTEDCODE123"),
+    });
+    expect(t.access_token).toBe("AT");
+    expect(cancelled).toBe(true);
+    const challenge = new URL(opened).searchParams.get("code_challenge");
+    expect(challenge).toBeTruthy();
+    expect(bodies[0].get("code")).toBe("PASTEDCODE123");
+    expect(bodies[0].get("redirect_uri")).toBe("http://127.0.0.1:56121/callback");
+    expect(bodies[0].get("code_verifier")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  it("cancelling frees the loopback port", async () => {
+    let cancelled = false;
+    await expect(
+      signIn({
+        server: { authorization_endpoint: "https://a/authorize", token_endpoint: "https://a/token" },
+        clientId: "c",
+        open: async () => undefined,
+        redirect: { uri: "http://127.0.0.1:56121/callback", wait: () => new Promise<string>(() => undefined), cancel: () => void (cancelled = true) },
+        manual: Promise.reject(new Error("cancelled by the user")),
+      }),
+    ).rejects.toThrow(/cancelled/);
+    expect(cancelled).toBe(true);
+  });
+});

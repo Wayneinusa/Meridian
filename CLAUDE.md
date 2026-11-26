@@ -23,7 +23,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 
 - **Repository:** https://github.com/Wayneinusa/Meridian (branch `main`); push remote `https://github.com/Wayneinusa/Meridian.git`.
 - **Releases** (the owner downloads from here): https://github.com/Wayneinusa/Meridian/releases/latest. It carries `Meridian_<version>_x64-setup.exe` (Windows) and `Meridian-unsigned.ipa` (iPhone/iPad).
-- **Version:** each CI build is `0.2.<run number>`. The latest released version is **0.2.14**.
+- **Version:** each CI build is `0.2.<run number>`. The latest released version is **0.2.15** (check the release page; CI numbers it).
 
 ## How the owner likes to work
 
@@ -52,12 +52,12 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 | Banks | Read-only, through SimpleFIN Bridge or the owner's own Plaid keys. Wells Fargo, American Express and Capital One each have a connector, plus "Any bank". |
 | iOS builds | GitHub Actions on **`macos-15-intel`**: Apple-silicon runners were cancelled for lack of capacity. The app is unsigned; the owner sideloads it. |
 
-## Status: built and shipped (0.2.14)
+## Status: built and shipped (0.2.15)
 
 | Area | Where |
 |---|---|
 | Providers: Claude (official SDK), OpenAI, Gemini, xAI, OpenAI-compatible presets including Runpod and Hostinger. A Model ID field and Wake up for cold models. | `src/providers/` |
-| Grok: Responses API with native `web_search` and `x_search`, Sign in with X (browser and device code) | `src/providers/xai.ts` |
+| Grok: Responses API with native `web_search` and `x_search`, Sign in with X (browser and device code; a paste box for the code xAI's page may show) | `src/providers/xai.ts`, `src/connectors/oauth.ts`, `src-tauri/src/oauth.rs` |
 | Images and video: Pollinations, AI Horde, Cloudflare, fal.ai, Runway, custom templates, plugin engines. A backend picker with separate image and video defaults. | `src/providers/backends.ts`, `media.ts`, `mediaUtil.ts`, `src/ui/BackendPicker.tsx` |
 | Agents, projects (knowledge with BM25), prompts and slash commands, memory, plan checklist, questions, sub-agents (`delegate`), research mode | `src/agent/`, `src/tools/assistant.ts`, `src/knowledge/` |
 | Plugins: Claude format, TypingMind single- and multi-function, Meridian JSON; sandboxed JS with standard `fetch`; plugin image/video engines | `src/plugins/`, `src/tools/sandbox.ts` |
@@ -88,7 +88,8 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 
 ```bash
 npm install
-npm run typecheck && npx vitest run      # 131 unit tests (18 files)
+npm run typecheck && npx vitest run      # 134 unit tests (18 files)
+(cd src-tauri && cargo test --lib)       # Rust tests (the sign-in listener)
 npm run build                            # web bundle for the e2e suites
 node e2e/run.cjs                          # 62 checks, core app        (port 4173)
 node e2e/features.cjs                     # 35 checks, library etc.    (port 4175)
@@ -116,6 +117,8 @@ npx tauri build --debug --no-bundle && xvfb-run -a node e2e/native.cjs   # real 
 - **Tool approvals:** `needsApproval` is synchronous. The browser tool keeps the last page's element metadata per chat for that reason.
 - **Consortium:** member messages carry `Message.member` and are excluded from later model history; only `phase: "final"` stays. User notes typed mid-run carry `member.phase: "note"` so they stay inside the thread.
 - The old iOS problem was GitHub runner capacity, not code. Intel Macs fixed it.
+- **Sign in with X:** xAI's page (auth.x.ai) does not always redirect. Its script hands the code to `http://127.0.0.1:56121/callback` with fetch, which a browser only allows after a CORS and Private Network Access preflight. `oauth.rs` answers OPTIONS with those headers and accepts the code by GET or POST. When that still fails, the page says "Enter this code… into Grok Build"; the card's paste box finishes sign-in (`manualRedirect` in `oauth.ts`, safe because PKCE ties the code to this attempt).
+- Under full parallel load the xlsx test in `tests/tools.test.ts` can pass its 5 s timeout; rerun it alone before chasing it.
 
 ## Where things are
 
