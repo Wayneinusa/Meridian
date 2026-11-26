@@ -51,11 +51,13 @@ function XSignIn({ provider }: { provider: ProviderConfig }) {
   const [busy, setBusy] = useState(false);
   const [inBrowser, setInBrowser] = useState(false);
   const [pasted, setPasted] = useState("");
+  const [failed, setFailed] = useState("");
   const abort = useRef<AbortController | null>(null);
   const manual = useRef<{ resolve: (v: string) => void; reject: (e: unknown) => void } | null>(null);
   const desktop = platform().desktop;
   const go = async (mode: "browser" | "device") => {
     setBusy(true);
+    setFailed("");
     abort.current = new AbortController();
     // xAI's page sometimes shows the code instead of returning it: the user can paste it here
     const pastedCode = new Promise<string>((resolve, reject) => (manual.current = { resolve, reject }));
@@ -65,7 +67,11 @@ function XSignIn({ provider }: { provider: ProviderConfig }) {
       await signInGrok(provider.id, mode, setCode, abort.current.signal, mode === "browser" ? pastedCode : undefined);
       toast("Signed in with X. Grok now uses your subscription.", "ok");
     } catch (e) {
-      if (!(e instanceof DOMException && e.name === "AbortError")) toast(`Sign in with X: ${errText(e)}`, "error");
+      if (!(e instanceof DOMException && e.name === "AbortError")) {
+        toast(`Sign in with X: ${errText(e)}`, "error");
+        // stays on the card: a toast is easy to miss after coming back from the browser
+        setFailed(errText(e));
+      }
     } finally {
       setBusy(false);
       setCode(null);
@@ -84,6 +90,11 @@ function XSignIn({ provider }: { provider: ProviderConfig }) {
         Use Grok with your SuperGrok or X Premium subscription instead of a metered key. Sign-in happens on xAI's page (auth.x.ai, which may call it “Grok Build”); Meridian only keeps the tokens, in this
         device's keychain. When both are set up, the sign-in is used.
       </p>
+      {failed && !busy && (
+        <div className="note err" role="alert" data-testid="x-signin-error" style={{ marginBottom: 8 }}>
+          Sign-in did not finish: {failed}
+        </div>
+      )}
       {code ? (
         <div className="note" role="status">
           Open <b>{code.verification_url}</b> and enter <code data-testid="x-device-code" style={{ fontSize: 17, letterSpacing: 1.5 }}>{code.user_code}</code>{" "}

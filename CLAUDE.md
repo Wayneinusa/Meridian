@@ -89,7 +89,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 ```bash
 npm install
 npm run typecheck && npx vitest run      # 134 unit tests (18 files)
-(cd src-tauri && cargo test --lib)       # Rust tests (the sign-in listener)
+(cd src-tauri && cargo test --lib)       # Rust tests (sign-in listener, keychain splitting)
 npm run build                            # web bundle for the e2e suites
 node e2e/run.cjs                          # 62 checks, core app        (port 4173)
 node e2e/features.cjs                     # 35 checks, library etc.    (port 4175)
@@ -118,6 +118,7 @@ npx tauri build --debug --no-bundle && xvfb-run -a node e2e/native.cjs   # real 
 - **Consortium:** member messages carry `Message.member` and are excluded from later model history; only `phase: "final"` stays. User notes typed mid-run carry `member.phase: "note"` so they stay inside the thread.
 - The old iOS problem was GitHub runner capacity, not code. Intel Macs fixed it.
 - **Sign in with X:** xAI's page (auth.x.ai) does not always redirect. Its script hands the code to `http://127.0.0.1:56121/callback` with fetch, which a browser only allows after a CORS and Private Network Access preflight. `oauth.rs` answers OPTIONS with those headers and accepts the code by GET or POST. When that still fails, the page says "Enter this code… into Grok Build"; the card's paste box finishes sign-in (`manualRedirect` in `oauth.ts`, safe because PKCE ties the code to this attempt).
+- **Windows Credential Manager holds at most 1280 characters per entry** (2560 bytes of UTF-16). OAuth tokens are often longer (xAI's are three JWTs), so `secrets.rs` splits long values into `<name>#0…` parts behind a `CHUNKS` head entry. Sign-in "worked in the browser but nothing changed in the app" was this: saving the tokens failed. Sign-in errors now stay on the card, not only in a toast.
 - Under full parallel load the xlsx test in `tests/tools.test.ts` can pass its 5 s timeout; rerun it alone before chasing it.
 
 ## Where things are

@@ -111,3 +111,13 @@ It had been planned but not yet built.
 - If xAI still shows a code, the provider card has a **Code from xAI** box with **Finish signing in**.
 - *Use a code instead* (device code) keeps working as before.
 - Verified with Rust tests against the listener and unit tests of the paste path; not yet against xAI's real page, which the build machine cannot reach.
+
+## 10. "It still doesn't work: the page says the device is connected, but nothing changes in the app"
+
+**Cause:** sign-in itself succeeded, but on Windows the tokens could not be saved. Windows Credential Manager holds at most 1280 characters per entry, and xAI's tokens are longer. The error appeared only as a short toast. The same limit could hit Google Drive, OneDrive and connector sign-ins.
+
+**Fix:**
+
+- Long secrets are split across several Credential Manager entries and joined again when read.
+- A failed sign-in now leaves its reason on the Grok card.
+- Verified with Rust tests using a store that enforces Windows' limit; the Windows build compiles in CI.
