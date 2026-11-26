@@ -23,7 +23,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 
 - **Repository:** https://github.com/Wayneinusa/Meridian (branch `main`); push remote `https://github.com/Wayneinusa/Meridian.git`.
 - **Releases** (the owner downloads from here): https://github.com/Wayneinusa/Meridian/releases/latest. It carries `Meridian_<version>_x64-setup.exe` (Windows) and `Meridian-unsigned.ipa` (iPhone/iPad).
-- **Version:** each CI build is `0.2.<run number>`. The latest released version is **0.2.20**.
+- **Version:** each CI build is `0.2.<run number>`. The latest released version is **0.2.25**.
 
 ## How the owner likes to work
 
@@ -52,7 +52,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 | Banks | Read-only, through SimpleFIN Bridge or the owner's own Plaid keys. Wells Fargo, American Express and Capital One each have a connector, plus "Any bank". |
 | iOS builds | GitHub Actions on **`macos-15-intel`**: Apple-silicon runners were cancelled for lack of capacity. The app is unsigned; the owner sideloads it. |
 
-## Status: built and shipped (0.2.20)
+## Status: built and shipped (0.2.25)
 
 | Area | Where |
 |---|---|
@@ -79,7 +79,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 2. **Long-running sessions.** Goal, budget and state machine persisted after every step; mid-run steering (continue / pivot / stop / change goal); survive restarts (tray); wake on schedule or event.
 3. **Specialised sub-agents.** Library agents with `role: subagent` called by name from `delegate`, in parallel or in sequence, with context hand-off; child rows in the plan checklist; plugins can ship them.
 4. **Rich artifacts.** In-app preview and light editing for xlsx (grid with live formulas), pptx (slides and notes), docx and Markdown; Open in app and Download.
-5. **Auto-invoked skills.** The Skills system exists (0.2.21+). Still to do: match skill descriptions to the request (BM25 plus project instructions) and suggest or pre-load them with confirmation; `/skill-name` already works.
+5. **Auto-invoked skills.** The Skills system exists (0.2.25). Still to do: match skill descriptions to the request (BM25 plus project instructions) and suggest or pre-load them with confirmation; `/skill-name` already works.
 6. **X tools, both options.** Official X API tools with the owner's developer app (search, read threads, trends, post with approval), and research mode that "prefers real-time sources" (on by default with Grok).
 7. **Remote worker, both options.** A self-hosted Docker worker using the same engine, plus Dispatch from iPhone to a computer, with status synced through the existing sync layer. The **hosted** option needs a server and accounts: **ask the owner where it should run** before building it.
 

@@ -130,7 +130,7 @@ Sign in with X now works on Windows (0.2.18).
 
 **Fix:** Meridian reports a version the gateway accepts. If xAI raises the minimum again, Meridian reads the new number from the refusal, remembers it and retries once, so it should not break the same way again. Tested against a mock that raises the minimum.
 
-## 12. Grok native search, Grok Imagine, per-model styles, Consortium redesign, Skills
+## 12. Grok native search, Grok Imagine, per-model styles, Consortium redesign, Skills → 0.2.25
 
 **Request** (four parts, built in this order):
 
