@@ -506,6 +506,26 @@ async function mediaTurn(host: EngineHost, c: Conversation, ref: ModelRef, kind:
   patchMessage(host, c, assistant.id, { parts: refs.map((r) => ({ type: "artifact" as const, origin: "model" as const, ...r })), stopReason: "end" });
 }
 
+/** One question to one model, no tools: the answer's text. */
+export async function completeOnce(host: EngineHost, ref: ModelRef, system: string, prompt: string, signal: AbortSignal, maxTokens = 2000): Promise<string> {
+  const settings = host.settings();
+  const found = findModel(settings, ref);
+  if (!found || found.model.kind !== "chat") throw new Error("Choose a chat model.");
+  const r = await adapterFor(found.provider.kind).chat({
+    provider: found.provider,
+    apiKey: await host.getKey(found.provider.id),
+    model: { ...found.model, caps: { ...found.model.caps, tools: false } },
+    system,
+    messages: [{ id: "q", role: "user", createdAt: 0, updatedAt: 0, parts: [{ type: "text", text: prompt }] }],
+    tools: [],
+    options: { params: { maxTokens }, webSearch: false, refusalFallback: settings.refusalFallback },
+    signal,
+    onUpdate: () => undefined,
+    blobs: host.blobs,
+  });
+  return r.parts.map((p) => (p.type === "text" ? p.text : "")).join("").trim();
+}
+
 /** Ask the model for a short chat title (cheap: no tools, few tokens). */
 export async function suggestTitle(host: EngineHost, c: Conversation, signal: AbortSignal): Promise<string | null> {
   const settings = host.settings();

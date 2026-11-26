@@ -69,7 +69,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 | Approvals and questions **inside the chat**, never popups | `src/ui/Dialogs.tsx` (`ChatPrompts`) |
 | **Computer use**: a screenshot-and-action loop, ask every action by default, preview of where the click lands, rate limit, kill switch (Stop, Esc, Ctrl+Alt+Esc enforced natively) | `src/tools/computer-use.ts`, `src-tauri/src/screen.rs`, `src/platform/killswitch.ts` |
 | **Browser agent**: managed Chromium download or Firefox; CDP and BiDi drivers; numbered page snapshot; approval rules; panel | `src/browser/`, `src/tools/browser.ts`, `src-tauri/src/browser.rs`, `src/ui/BrowserPanel.tsx`, `src/ui/BrowserSettings.tsx` |
-| **Consortium**: plan → assign → work (scratchpad, `ask_member`) → review → draft and vote rounds → final (consensus, majority or no agreement); stop a member, force the vote, user notes | `src/agent/consortium.ts`, `src/state/consortiumRun.ts`, `src/ui/Consortium.tsx` |
+| **Consortium**: full-page studio (`view: consortium`): manual builder (2–6, name/role/model/agent/coordinator/reorder), quick starts incl. operational crews, **automatic team** (planner proposes count, roles, models → editable). Styles: *deliberate* (plan → assign → work → review → draft/vote → final) and *execute* (jobs → parallel work → auditors → one fix pass → report). Team panel beside the chat: status, scratchpad (`Conversation.scratchpad`), stop, force vote / report now | `src/agent/consortium.ts` (`runCrew`, `isChecker`), `src/agent/teamPlanner.ts`, `src/state/consortiumRun.ts`, `src/ui/Consortium.tsx` (`TeamBuilder`, `TeamPanel`), `src/ui/pages/ConsortiumPage.tsx` |
 | Chat features: versions, compare, fork, private chats, archive, Grok section at the bottom of the sidebar, search, export and import, usage page, voice, favourites first in a wide model menu | `src/ui/` |
 
 ## Next up (the agreed order: see `docs/agent-roadmap.md`)
@@ -90,14 +90,14 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 
 ```bash
 npm install
-npm run typecheck && npx vitest run      # 155 unit tests (20 files)
+npm run typecheck && npx vitest run      # 162 unit tests (20 files)
 (cd src-tauri && cargo test --lib)       # Rust tests (sign-in listener, keychain splitting)
 npm run build                            # web bundle for the e2e suites
 node e2e/run.cjs                          # 62 checks, core app        (port 4173)
 node e2e/features.cjs                     # 42 checks, library, customize (port 4175)
 node e2e/media-sync.cjs                   # 23 checks, free media, sync (port 4176)
 node e2e/grok-banks.cjs                   # 37 checks, Grok, banks, UI  (port 4177)
-node e2e/consortium.cjs                   # 15 checks, consortium       (port 4178)
+node e2e/consortium.cjs                   # 34 checks, consortium studio, crew (port 4178)
 npx tauri build --debug --no-bundle && xvfb-run -a node e2e/native.cjs   # real Linux app via tauri-driver
 ```
 
@@ -124,6 +124,7 @@ npx tauri build --debug --no-bundle && xvfb-run -a node e2e/native.cjs   # real 
 - **xAI's subscription gateway gates on `x-grok-client-version`**: it answers 426 "Your Grok CLI version (…) is outdated. Please update to version X or later". Meridian sends at least 1.0.13 and, on a refusal that names a newer minimum, adopts it (saved in localStorage) and retries once (`adoptRequiredVersion` in `xai.ts`).
 - **Media choice order** (`mediaChoice`): the chat's own pick → Grok Imagine for Grok chats → saved default → automatic. Switching to Image/Video calls `setChatModel(ref, true)`, which neither saves a default nor records a per-chat pick; only an explicit pick does.
 - **Native search fallback:** the xAI adapter throws `NativeSearchUnavailable` only for request-shaped refusals (400/404/422/501, or tool errors in the stream), never for credits, sign-in or version problems. The engine removes the half-made answer, marks the provider in `nativeSearch.ts` and redoes the step.
+- **Consortium e2e timing:** wait for "working" in the Team panel (`[data-testid=team-panel]`) before adding an instruction; the old status chips are hidden while the panel is open. Member names live in inputs, so read them with `evaluateAll(e => e.value)`, not `textContent`.
 - Under full parallel load the xlsx test in `tests/tools.test.ts` can pass its 5 s timeout; rerun it alone before chasing it.
 
 ## Where things are

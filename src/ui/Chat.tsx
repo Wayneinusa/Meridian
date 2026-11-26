@@ -4,7 +4,7 @@ import { pickFolder } from "../platform/files";
 import { exportChat, forkChat, keepPrivateChat, send, setChatAgent, setResearchMode, setView, setWorkFolder, useApp } from "../state/store";
 import type { Message } from "../types";
 import { ArtifactsPanel } from "./Artifacts";
-import { ConsortiumBar, ConsortiumChip, ConsortiumThread } from "./Consortium";
+import { ConsortiumBar, ConsortiumChip, ConsortiumThread, TeamPanel } from "./Consortium";
 import { BrowserPanel } from "./BrowserPanel";
 import { ChatPrompts, WaitingElsewhere } from "./Dialogs";
 import { Composer } from "./Composer";
@@ -140,6 +140,8 @@ export function Chat() {
   const busy = useApp((s) => (s.activeId ? s.busy[s.activeId] !== undefined : false));
   const hasParams = !!(active?.params && Object.keys(active.params).length) || !!active?.systemPrompt;
   const research = (active ? active.mode : draft.mode) === "research";
+  const consortiumOn = (active ? active.mode : draft.mode) === "consortium" && !!(active ? active.consortium : draft.consortium);
+  const teamOpen = useApp((s) => s.teamOpen);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [menu, setMenu] = useState(false);
@@ -188,6 +190,11 @@ export function Chat() {
           {active?.workFolder && <span className="chip-btn on" title={active.workFolder}><Icon.folder /> {active.workFolder.split(/[\\/]/).pop()}</span>}
         </div>
         <ModelPicker />
+        {consortiumOn && (
+          <button className={`icon-btn ${teamOpen ? "on" : ""}`} title="The team: members, status and scratchpad" aria-pressed={teamOpen} onClick={() => useApp.setState({ teamOpen: !teamOpen, artifactsOpen: false, browserOpen: false })}>
+            <Icon.agent />
+          </button>
+        )}
         {hasBrowser && (
           <button className={`icon-btn ${browserOpen ? "on" : ""}`} title="The assistant's browser" onClick={() => useApp.setState({ browserOpen: !browserOpen, artifactsOpen: false })}>
             <Icon.globe />
@@ -280,11 +287,12 @@ export function Chat() {
               </div>
             </div>
           )}
-          <ConsortiumBar />
+          {!(consortiumOn && teamOpen && !artifactsOpen && !(browserOpen && hasBrowser)) && <ConsortiumBar />}
           <Composer />
         </div>
         {artifactsOpen && <ArtifactsPanel />}
         {browserOpen && hasBrowser && !artifactsOpen && <BrowserPanel />}
+        {consortiumOn && teamOpen && !artifactsOpen && !(browserOpen && hasBrowser) && <TeamPanel />}
       </div>
       {paramsOpen && <ParamsPanel />}
     </main>

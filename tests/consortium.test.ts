@@ -148,3 +148,129 @@ describe("consortium", () => {
     await expect(runConsortium("t", cfg({ members: members.slice(0, 1) }), io)).rejects.toThrow(/at least two/);
   });
 });
+
+import { isChecker } from "../src/agent/consortium";
+import { modelOptions, parseProposal, plannerPrompt } from "../src/agent/teamPlanner";
+import type { ProviderConfig } from "../src/types";
+
+describe("execution crew", () => {
+  const crew: ConsortiumMember[] = [
+    { id: "l", name: "Lead", role: "runs the operation", emoji: "🧭" },
+    { id: "s", name: "Scout", role: "gathers the current facts" },
+    { id: "r", name: "Reconciler", role: "matches payouts against bookings" },
+    { id: "a", name: "Auditor", role: "audits the crew's results" },
+  ];
+  const crewCfg = (over: Partial<ConsortiumConfig> = {}): ConsortiumConfig => ({ members: crew, coordinatorId: "l", rounds: 2, workSteps: 8, style: "execute", ...over });
+
+  function crewHarness(script: (name: string, prompt: string) => string) {
+    const posts: { tag: Omit<MemberTag, "run">; text: string }[] = [];
+    const prompts: { member: string; prompt: string; tools: boolean; order: number }[] = [];
+    const plans: PlanItem[][] = [];
+    let order = 0;
+    const io: ConsortiumIO = {
+      async speak(m, _system, prompt, o) {
+        prompts.push({ member: m.name, prompt, tools: o.tools, order: order++ });
+        await new Promise((r) => setTimeout(r, 1));
+        return { text: script(m.name, prompt), files: [] };
+      },
+      post: (tag, text) => void posts.push({ tag, text }),
+      setPlan: (p) => void plans.push(p),
+      status: () => undefined,
+      takeNotes: () => [],
+      stopped: () => new Set(),
+      forced: () => false,
+      signalFor: () => new AbortController().signal,
+      signal: new AbortController().signal,
+    };
+    return { io, posts, prompts, plans };
+  }
+
+  it("assigns jobs by role, works at once, audits, fixes what was flagged, and reports without a vote", async () => {
+    const { io, posts, prompts, plans } = crewHarness((name, p) => {
+      if (/You lead this crew/.test(p)) return 'Go: {"assignments":[{"member":"Lead","part":"track the run"},{"member":"Scout","part":"pull this week\'s bookings"},{"member":"Reconciler","part":"match payouts to bookings"}]}';
+      if (/The audit found/.test(p)) return `${name} FIXED`;
+      if (/Your job:/.test(p)) return `${name} DONE`;
+      if (/Audit the crew/.test(p)) return "ISSUES\n- Reconciler: payout 1042 counted twice";
+      if (/crew's report/.test(p)) return "REPORT: all reconciled";
+      return "?";
+    });
+    const r = await runConsortium("Reconcile payouts", crewCfg(), io);
+    expect(r.outcome).toBe("completed");
+    // no planning debate, no votes
+    expect(posts.some((x) => x.tag.phase === "plan" || x.tag.phase === "vote" || x.tag.phase === "draft")).toBe(false);
+    // the auditor does not get a work job; it audits after the work
+    const work = prompts.filter((x) => /Your job:/.test(x.prompt)).map((x) => x.member).sort();
+    expect(work).toEqual(["Lead", "Reconciler", "Scout"]);
+    const audit = prompts.find((x) => /Audit the crew/.test(x.prompt))!;
+    expect(audit.member).toBe("Auditor");
+    expect(audit.tools).toBe(true);
+    expect(Math.min(...prompts.filter((x) => /Your job:/.test(x.prompt)).map((x) => x.order))).toBeLessThan(audit.order);
+    // only the member the audit named fixes its work
+    expect(prompts.filter((x) => /The audit found/.test(x.prompt)).map((x) => x.member)).toEqual(["Reconciler"]);
+    expect(plans[0].map((x) => x.text)).toEqual(["🧭 Lead: track the run", "Scout: pull this week's bookings", "Reconciler: match payouts to bookings", "Auditor: audit the results"]);
+    expect(posts.at(-1)!.tag.outcome).toBe("Crew finished — 3 of 3 jobs done · audit passed");
+    expect(posts.at(-1)!.text).toBe("REPORT: all reconciled");
+  });
+
+  it("reports a partial result when a job fails and there is no fix pass", async () => {
+    const { io, posts } = crewHarness((name, p) => {
+      if (/You lead this crew/.test(p)) return "no json";
+      if (/Your job:/.test(p)) {
+        if (name === "Scout") throw new Error("site down");
+        return `${name} DONE`;
+      }
+      if (/Audit the crew/.test(p)) return "ISSUES\n- Scout: nothing delivered";
+      return "REPORT";
+    });
+    const r = await runConsortium("t", crewCfg({ rounds: 1 }), io);
+    expect(r.outcome).toBe("partial");
+    expect(posts.at(-1)!.tag.outcome).toBe("Crew partly finished — 2 of 3 jobs done · audit found issues");
+    // without the coordinator's JSON, each member falls back to its role
+    expect(posts.some((x) => x.tag.name === "Scout" && /Could not finish: site down/.test(x.text))).toBe(true);
+  });
+
+  it("knows which roles check the others", () => {
+    expect(crew.filter(isChecker).map((m) => m.name)).toEqual(["Auditor"]);
+    expect(isChecker({ id: "x", name: "QA", role: "tests things" })).toBe(true);
+  });
+});
+
+describe("automatic teams", () => {
+  const providers: ProviderConfig[] = [
+    { id: "anthropic", kind: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com", enabled: true, hasKey: true, models: [{ id: "claude-opus-5-5", name: "Claude Opus 5.5", kind: "chat", caps: { vision: true, pdf: true, tools: true, thinking: true } }, { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", kind: "chat", caps: { vision: true, pdf: true, tools: true, thinking: false } }] },
+    { id: "xai", kind: "xai", name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1", enabled: true, signedIn: true, models: [{ id: "grok-4", name: "Grok 4", kind: "chat", caps: { vision: true, pdf: false, tools: true, thinking: true } }, { id: "grok-imagine-image", name: "Imagine", kind: "image", caps: { vision: true, pdf: false, tools: false, thinking: false } }] },
+    { id: "openai", kind: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", enabled: true, models: [{ id: "gpt-4o", name: "GPT-4o", kind: "chat", caps: { vision: true, pdf: false, tools: true, thinking: false } }] },
+  ];
+
+  it("offers only ready chat models with tools, and respects the chosen providers", () => {
+    expect(modelOptions(providers).map((m) => m.key)).toEqual(["anthropic::claude-opus-5-5", "anthropic::claude-haiku-5-5", "xai::grok-4"]);
+    expect(modelOptions(providers, ["xai"]).map((m) => m.key)).toEqual(["xai::grok-4"]);
+    expect(modelOptions(providers)[1].traits).toContain("fast, cheap");
+  });
+
+  it("asks for a team within the limits, listing the models by id", () => {
+    const { prompt } = plannerPrompt({ task: "Run the weekly reconciliation", maxAgents: 3, preferFast: true, style: "auto" }, modelOptions(providers));
+    expect(prompt).toContain("2 to 3 agents");
+    expect(prompt).toContain("xai::grok-4");
+    expect(prompt).toContain("Prefer fast, cheap models");
+    expect(prompt).toMatch(/"execute" when the task is operational/);
+  });
+
+  it("turns the planner's answer into an editable team, fixing what it got wrong", () => {
+    const text = 'Here you go:\n```json\n{"style":"execute","rationale":"Ops work needs a crew.","members":[{"name":"Scout","emoji":"🔭","role":"pulls bookings","model":"grok-4"},{"name":"Reconciler","role":"matches payouts","model":"anthropic::claude-haiku-5-5","coordinator":true},{"name":"Auditor","role":"checks figures","model":"gpt-9-unknown"},{"name":"Extra","role":"x"}]}\n```';
+    const p = parseProposal(text, { task: "t", maxAgents: 3, style: "auto" }, modelOptions(providers), { providerId: "anthropic", modelId: "claude-opus-5-5" });
+    expect(p.rationale).toBe("Ops work needs a crew.");
+    expect(p.config.style).toBe("execute");
+    expect(p.config.origin).toBe("auto");
+    expect(p.config.members.map((m) => m.name)).toEqual(["Scout", "Reconciler", "Auditor"]);
+    expect(p.config.members.map((m) => m.model?.modelId)).toEqual(["grok-4", "claude-haiku-5-5", "claude-opus-5-5"]);
+    expect(p.config.coordinatorId).toBe(p.config.members[1].id);
+  });
+
+  it("the user's choice of style wins, and nonsense is reported", () => {
+    const text = '{"style":"execute","members":[{"name":"A","role":"a"},{"name":"B","role":"b"}]}';
+    expect(parseProposal(text, { task: "t", maxAgents: 4, style: "deliberate" }, modelOptions(providers)).config.style).toBe("deliberate");
+    expect(() => parseProposal("I would suggest a team of experts.", { task: "t", maxAgents: 4 }, modelOptions(providers))).toThrow(/could not be read/);
+    expect(() => parseProposal('{"members":[{"name":"Solo","role":"all"}]}', { task: "t", maxAgents: 4 }, modelOptions(providers))).toThrow(/fewer than two/);
+  });
+});

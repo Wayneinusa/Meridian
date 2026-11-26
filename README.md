@@ -8,7 +8,7 @@ A multi-provider AI workspace for **iPhone, iPad and Windows** from one codebase
 |---|---|
 | **Models** | Claude (official SDK), OpenAI, Google Gemini, xAI Grok (API key **or Sign in with X**), and anything OpenAI-compatible: OpenRouter, Ollama, LM Studio, Groq, Mistral, DeepSeek, Perplexity, Together, Fireworks, Cerebras, Hugging Face, Featherless, Moonshot, Qwen, Nvidia NIM, Azure, Runpod Serverless, a Hostinger VPS, your own endpoint. Favourite models are listed first in the model menu. Each provider card has an optional **Model ID** field for models the provider does not list (such as cold models), with **Wake up**, which retries a tiny request until the model has loaded. |
 | **Images & video** | Chat / Image / Video switch in the composer, with a **backend button** next to it: pick the service and model for this chat, and **Make default** for images and for video separately. **Free**: Pollinations (no sign-up for images; a free key adds 50+ models and video), AI Horde (free community GPUs), Cloudflare Workers AI (free daily allowance). **With your key or Sign in with X**: Grok Imagine (used automatically in Grok chats). **With your key**: OpenAI (gpt-image, DALL·E, Sora), Google (Imagen, Gemini image models, Veo), OpenRouter, fal.ai (Flux, Kling, Wan, MiniMax…), Runway (Gen-4). **Custom**: any server, OpenAI-, xAI- or fal-style, or described by a request template. Plugins can add their own image or video engines. Aspect ratio, count, quality, length, resolution; **Edit** and **Animate** on any picture; chat models can also create pictures as a tool. |
-| **Consortium** | Several agents (2–6, any mix of models: Claude, Grok, GPT, Gemini, local) take one task together: they plan who does what, work in parallel with a shared scratchpad and questions to each other, review each other, and vote on a joint answer. The result is a consensus, a majority with the dissent shown, or the separate positions when they don't agree. The whole discussion is visible, and you can add instructions, stop an agent or force the vote. |
+| **Consortium** | A full-page studio: build a team by hand (2–6 agents, each with a name, a free-text role and its own model and provider) or have a strong model propose one for your task; then they either discuss and vote on a joint answer, or work at the same time as an execution crew with an auditor. Several agents (any mix of models: Claude, Grok, GPT, Gemini, local) take one task together: they plan who does what, work in parallel with a shared scratchpad and questions to each other, review each other, and vote on a joint answer. The result is a consensus, a majority with the dissent shown, or the separate positions when they don't agree. The whole discussion is visible, and you can add instructions, stop an agent or force the vote. |
 | **Customize** | Like Grok's *Customize Grok*, for every model: a response style (Concise, Explanatory, Formal, Friendly, Socratic or your own words), what models should know about you, and standing instructions. Set them once under **Settings → Customize → Global**; give any model its own style, "about you" or instructions (replacing or added to the global ones) under **Per model**. Whatever a model does not set comes from Global, and **Use Global** removes its own settings. The model-parameters panel in a chat shows whether the current model uses Global or its own. |
 | **Agents** | Assistants with their own instructions, model, tools, knowledge files, memory and conversation starters; eight templates. |
 | **Projects** | Chats grouped with shared instructions, knowledge files (given in full when small, searched with BM25 when large), a default agent and model, and on desktop a work folder the assistant may use. |
@@ -100,28 +100,53 @@ Settings → Connectors → *Banking*: add **Wells Fargo**, **American Express**
 
 ## Consortium: several agents on one task
 
-Press **Consortium** in the chat's header (next to *Research*):
+The **Consortium** studio is a full page: open it from **Consortium** in the sidebar, or the **Consortium** button in a chat's header. There are two ways to build a team.
 
-- **The team:** choose a suggested team (*Research team*, *Debate*, *Build & review*, or a *Cross-model team* that puts each member on a different provider's model), or build your own with 2–6 members. Each member has a name, a role and, optionally, its own model and one of your saved agents, whose instructions, tools and knowledge come along.
-- **The settings:** pick the coordinator (who merges plans, drafts and writes the answer), the number of vote rounds (1–5) and the steps each member may take while working. The panel estimates the number of model calls per task.
-- **Start:** press *Turn on consortium mode*. The message box now says *Give the consortium a task*.
+**Manual team**
 
-What happens, all of it shown in a collapsible **Consortium discussion** in the chat:
+- **Number of agents:** choose 2 to 6.
+- **Each member:** give it a name and a **role** (free text, as specific as you like: *Scout*, *Reconciler*, *Guest Contact*, *Auditor*…), and its own **model and provider** (any chat model you have). Optionally link one of your saved agents; its instructions, tools and knowledge come along.
+- **The coordinator:** mark one member as coordinator. Use ↑ ↓ to reorder members.
+- **Quick starts** fill the builder: *Research team*, *Debate*, *Build & review*, *Cross-model team*, plus the operational crews *Operations crew* (Lead, Scout, Reconciler, Guest Contact, Auditor) and *Incident response* (Incident Lead, Investigator, Fixer, Communicator).
 
-1. **Planning:** each member proposes how to divide the task and which part it takes, seeing the earlier proposals.
-2. **Assignments:** the coordinator gives each member one part. The parts appear in the plan checklist and tick off as members finish.
-3. **Work:** members work on their parts at the same time, with their tools (files, web, connectors, the browser…), a **shared scratchpad**, and `ask_member` to ask a teammate a question (the question and answer show in the thread).
-4. **Reviews:** each member reviews the others' work and states its position.
-5. **Draft and votes:** the coordinator drafts a joint answer; everyone votes *agree* or *disagree* with a reason. Objections lead to a revised draft, up to the number of rounds you chose.
-6. **The answer** is labelled with the outcome: *Consensus (3 of 3)*, *Majority (2 of 3 agree)* with a *Dissent* section, or *No agreement*, with the positions side by side. The app never presents a forced agreement.
+**Automatic team**
 
-While it runs, a bar above the message box shows every member and what it is doing (thinking, working, reviewing, voting, agrees, disagrees). From there you can:
+- **Describe the task**, and optionally set limits:
+  - the maximum number of agents;
+  - which providers the team may use;
+  - *Prefer fast, cheap models*;
+  - discussion or execution crew, or let the planner decide;
+  - notes for the planner.
+- **The planner** (a strong model you choose) proposes how many agents, the role of each, the model for each, and why.
+- **Before anything runs**, the proposal opens in the same builder. Edit anything, or press **Regenerate**.
 
-- **stop** one member with its ×
-- press **Force a vote** to skip the rest of the discussion
-- type into the message box to **add an instruction**: it appears in the thread and every member reads it before its next step.
+**How the team works** (choose either way, for any team):
 
-Everything stays on your device in the chat, like any other message. Later questions in the same chat see the consortium's answer, not its whole discussion.
+- **Discuss and agree:**
+  1. Each member proposes how to divide the task.
+  2. The coordinator assigns the parts, which appear in the plan checklist.
+  3. Members work at the same time with their tools, a **shared scratchpad** and `ask_member`.
+  4. Each member reviews the others' work.
+  5. The coordinator drafts a joint answer and everyone votes, for up to the number of rounds you set.
+  6. The answer is labelled *Consensus*, *Majority* (with a *Dissent* section) or *No agreement*, with the positions side by side. Agreement is never forced.
+- **Execution crew**, for operational work:
+  1. The coordinator gives each role one concrete job.
+  2. Everyone works **at the same time** with their tools and the scratchpad.
+  3. Members whose role is to check (auditor, reviewer, QA…) audit the results.
+  4. If the audit flags problems, the members it names fix their part once.
+  5. The coordinator reports what was done, what each role found and what is still open: *Crew finished — 3 of 3 jobs done · audit passed*, or *Crew partly finished*. There is no voting.
+
+**Start the consortium** opens a new chat with the team and gives it the task. Or use **Use in this chat** to keep working in the current chat.
+
+**The Team panel** beside the chat shows:
+
+- each member with its role, model and live status (planning, working, auditing, voting…), and an × to **stop** it;
+- the **shared scratchpad** as members write to it;
+- **Force a vote** or **Report now**, and **Edit team**.
+
+Type in the message box while the team works to **add an instruction**. It appears in the discussion and every member reads it before its next step. The whole discussion is in a collapsible **Consortium discussion** in the chat.
+
+Everything stays on your device in the chat, like any other message. Later questions in the same chat see the consortium's answer, not its whole discussion. Each member answers with its own model's customization (Settings → Customize).
 
 ## Computer use and the assistant's browser
 

@@ -12,8 +12,13 @@
 //   final    consensus, a clear majority (dissent shown), or the separate positions
 //            when there is no agreement - never a forced one
 //
+// An execution crew (style "execute") skips the debate: the coordinator hands
+// each role a concrete job, everyone works at the same time, members whose role
+// is to check (auditor, reviewer, QA) audit the results, one fix pass follows
+// if they found problems, and the coordinator reports what was done.
+//
 // Every message is posted to the chat as it happens. The user can add
-// instructions, stop a member or force the vote at any time.
+// instructions, stop a member or force the vote (or the report) at any time.
 import type { BlobRef, ConsortiumConfig, ConsortiumMember, ConsortiumPhase, MemberTag, PlanItem } from "../types";
 import type { Tool } from "../tools/types";
 
@@ -49,7 +54,7 @@ export interface ConsortiumIO {
 }
 
 export interface ConsortiumResult {
-  outcome: "consensus" | "majority" | "no agreement";
+  outcome: "consensus" | "majority" | "no agreement" | "completed" | "partial";
   agree: number;
   voters: number;
   final: string;
@@ -65,9 +70,14 @@ export function memberSystem(m: ConsortiumMember, cfg: ConsortiumConfig): string
     `You are ${m.name}, one member of a consortium of ${cfg.members.length} AI agents working together on one task for the user.`,
     `Your role: ${m.role}.`,
     `The team:\n${team}`,
-    "Work as a real colleague: be specific, build on good ideas, and say plainly when you think someone is wrong. Never pretend to agree. Keep messages focused; no greetings.",
+    cfg.style === "execute"
+      ? "This is an operational crew working at the same time. Act, don't debate: do your role's job with your tools, report concrete results (what you did, what you found, what is still open), and coordinate through the shared scratchpad. Ask a teammate only when you are blocked. No greetings."
+      : "Work as a real colleague: be specific, build on good ideas, and say plainly when you think someone is wrong. Never pretend to agree. Keep messages focused; no greetings.",
   ].join("\n\n");
 }
+
+/** Members whose job is to check the others' work (auditor, reviewer, QA…). */
+export const isChecker = (m: ConsortiumMember) => /audit|review|check|verif|\bqa\b|quality|inspect|critic|compliance/i.test(`${m.name} ${m.role}`);
 
 /** Find {"assignments":[...]} in the coordinator's answer; tolerant of prose around it. */
 export function parseAssignments(text: string, members: ConsortiumMember[]): Map<string, string> {
@@ -106,6 +116,7 @@ interface Turn {
 export async function runConsortium(task: string, cfg: ConsortiumConfig, io: ConsortiumIO, makeTools?: (member: ConsortiumMember) => Tool[]): Promise<ConsortiumResult> {
   const members = cfg.members.slice(0, 6);
   if (members.length < 2) throw new Error("A consortium needs at least two members.");
+  if (cfg.style === "execute") return runCrew(task, { ...cfg, members }, io, makeTools);
   const notes: string[] = [];
   const log: Turn[] = [];
   const active = () => members.filter((m) => !io.stopped().has(m.id));
@@ -269,4 +280,142 @@ export async function runConsortium(task: string, cfg: ConsortiumConfig, io: Con
   io.post({ id: c?.id ?? "coordinator", name: c?.name ?? "Coordinator", emoji: c?.emoji, phase: "final", outcome: `${label2}${tally ? ` — ${tally}` : ""}` }, final);
   for (const m of members) if (!io.stopped().has(m.id)) io.status(m.id, "done");
   return { outcome, agree, voters, final };
+}
+
+// ---------------------------------------------------------------- execution crew
+
+export async function runCrew(task: string, cfg: ConsortiumConfig, io: ConsortiumIO, makeTools?: (member: ConsortiumMember) => Tool[]): Promise<ConsortiumResult> {
+  const members = cfg.members;
+  const notes: string[] = [];
+  const log: Turn[] = [];
+  const active = () => members.filter((m) => !io.stopped().has(m.id));
+  const coordinator = () => active().find((m) => m.id === cfg.coordinatorId) ?? active()[0];
+  const system = new Map(members.map((m) => [m.id, memberSystem(m, cfg)]));
+  const context = (include: ConsortiumPhase[], exclude?: string) => {
+    for (const n of io.takeNotes()) notes.push(n);
+    const parts = [`Task from the user:\n${task}`];
+    if (notes.length) parts.push(`Instructions the user added while the crew worked (follow them):\n${notes.map((n) => `- ${n}`).join("\n")}`);
+    const shown = log.filter((t) => include.includes(t.phase) && t.name !== exclude);
+    if (shown.length) parts.push(`So far:\n${shown.map((t) => `--- ${t.name} (${t.phase}):\n${clip(t.text)}`).join("\n\n")}`);
+    return parts.join("\n\n");
+  };
+  const say = async (m: ConsortiumMember, phase: ConsortiumPhase, prompt: string, opts: Partial<SpeakOptions> = {}): Promise<Spoken | null> => {
+    const signal = io.signalFor(m.id);
+    if (signal.aborted || io.signal.aborted) return null;
+    io.status(m.id, phase === "work" ? "working" : phase === "review" ? "auditing" : "planning");
+    try {
+      const r = await io.speak(m, system.get(m.id)!, prompt, { tools: opts.tools ?? false, maxSteps: opts.maxSteps ?? 1, signal, extraTools: opts.extraTools });
+      const text = r.text.trim() || "(no answer)";
+      log.push({ name: m.name, phase, text });
+      io.post({ id: m.id, name: m.name, emoji: m.emoji, phase }, text, r.files);
+      io.status(m.id, "waiting");
+      return { text, files: r.files };
+    } catch (e) {
+      if (io.signal.aborted) throw e;
+      io.status(m.id, io.stopped().has(m.id) ? "stopped" : "waiting");
+      if (signal.aborted) return null;
+      io.post({ id: m.id, name: m.name, emoji: m.emoji, phase }, `Could not finish: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  };
+
+  // ---- 1. assign: one concrete job per role, done at the same time
+  const checkers = () => {
+    const c = active().filter(isChecker);
+    return c.length === active().length ? [] : c;
+  };
+  const workers = () => active().filter((m) => !checkers().includes(m));
+  let jobs = new Map<string, string>();
+  const coord = coordinator();
+  if (!io.forced() && coord) {
+    const r = await say(
+      coord,
+      "assign",
+      `${context([])}\n\nYou lead this crew. Give each of these members one concrete job that fits their role, to be done at the same time, so that together they complete the task: ${workers().map((m) => `${m.name} (${m.role})`).join(", ")}.${checkers().length ? ` ${checkers().map((m) => m.name).join(" and ")} will audit the results afterwards; do not assign them work now.` : ""} Reply with one sentence, then JSON only, like {"assignments":[{"member":"Name","part":"…"}]}.`,
+    );
+    if (r) jobs = parseAssignments(r.text, workers());
+  }
+  for (const m of workers()) if (!jobs.has(m.id)) jobs.set(m.id, `Do what your role covers: ${m.role}.`);
+  const statusOf = new Map<string, PlanItem["status"]>();
+  const plan = () =>
+    io.setPlan([
+      ...workers().map((m) => ({ text: `${label(m)}: ${jobs.get(m.id)}`, status: statusOf.get(m.id) ?? ("pending" as const) })),
+      ...checkers().map((m) => ({ text: `${label(m)}: audit the results`, status: statusOf.get(m.id) ?? ("pending" as const) })),
+    ]);
+  plan();
+
+  // ---- 2. work: everyone at once
+  const results = new Map<string, string>();
+  const work = async (m: ConsortiumMember, prompt: string) => {
+    statusOf.set(m.id, "in_progress");
+    plan();
+    const r = await say(m, "work", prompt, { tools: true, maxSteps: cfg.workSteps, extraTools: makeTools?.(m) });
+    if (r) results.set(m.id, r.text);
+    statusOf.set(m.id, r ? "done" : "pending");
+    plan();
+  };
+  if (!io.forced()) {
+    await Promise.all(
+      workers().map((m) =>
+        work(
+          m,
+          `${context(["assign"])}\n\nYour job: ${jobs.get(m.id)}\n\nDo it now with your tools. Record facts others need in the shared scratchpad as you go. Finish with a short report: what you did, the result, anything still open.`,
+        ),
+      ),
+    );
+  }
+
+  // ---- 3. audit, then one fix pass for what the auditors flagged
+  let issues = false;
+  if (!io.forced() && checkers().length && results.size) {
+    const audits = await Promise.all(
+      checkers().map(async (m) => {
+        statusOf.set(m.id, "in_progress");
+        plan();
+        const r = await say(
+          m,
+          "review",
+          `${context(["work"])}\n\nAudit the crew's results against the task. Check facts, numbers and anything that could go wrong; use your tools to verify where you can. First line exactly PASS or ISSUES. Then list each problem as "- <member>: <what to fix>".`,
+          { tools: true, maxSteps: Math.max(3, Math.round(cfg.workSteps / 2)), extraTools: makeTools?.(m) },
+        );
+        statusOf.set(m.id, "done");
+        plan();
+        return r?.text ?? "";
+      }),
+    );
+    const flagged = audits.filter((a) => /^\W*issues/i.test(a.trim()));
+    issues = flagged.length > 0;
+    if (issues && cfg.rounds > 1 && !io.forced()) {
+      const findings = flagged.join("\n\n");
+      const named = workers().filter((m) => results.has(m.id) && new RegExp(`\\b${m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(findings));
+      await Promise.all(
+        (named.length ? named : workers().filter((m) => results.has(m.id))).map((m) =>
+          work(m, `${context(["work"], undefined)}\n\nThe audit found:\n${clip(findings, 4000)}\n\nFix what concerns your job (${jobs.get(m.id)}). Report what you changed.`),
+        ),
+      );
+      issues = false;
+    }
+  }
+
+  // ---- 4. the report
+  const done = workers().filter((m) => results.has(m.id)).length;
+  const total = workers().length;
+  const outcome: ConsortiumResult["outcome"] = done === total && !issues && !io.forced() ? "completed" : "partial";
+  const c = coordinator();
+  let final = [...results.entries()].map(([id, t]) => `**${members.find((m) => m.id === id)?.name}:** ${t}`).join("\n\n");
+  if (c && !io.signal.aborted) {
+    io.status(c.id, "writing the report");
+    const r = await io.speak(
+      c,
+      system.get(c.id)!,
+      `${context(["work", "review"])}\n\nWrite the crew's report for the user: the outcome first, then what each role did and found, then anything still open or needing the user's decision. ${outcome === "partial" ? "Not everything was finished: say plainly what is missing." : ""} Don't retell the discussion.`,
+      { tools: false, maxSteps: 1, signal: io.signal },
+    );
+    final = r.text.trim() || final;
+    io.status(c.id, "done");
+  }
+  const audit = checkers().length ? (issues ? " · audit found issues" : " · audit passed") : "";
+  io.post({ id: c?.id ?? "coordinator", name: c?.name ?? "Coordinator", emoji: c?.emoji, phase: "final", outcome: `${outcome === "completed" ? "Crew finished" : "Crew partly finished"} — ${done} of ${total} jobs done${audit}` }, final);
+  for (const m of members) if (!io.stopped().has(m.id)) io.status(m.id, "done");
+  return { outcome, agree: done, voters: total, final };
 }

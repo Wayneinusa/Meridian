@@ -221,6 +221,15 @@ export interface ConsortiumConfig {
   rounds: number;
   /** tool steps each member may take while working on its part */
   workSteps: number;
+  /**
+   * deliberate (default): plan, work, review, then draft and vote on a joint answer.
+   * execute: an operational crew; each role does its part at the same time, an
+   * auditor (if any) checks, and the coordinator reports what was done. No vote.
+   */
+  style?: "deliberate" | "execute";
+  /** how the team was made, and why (automatic teams) */
+  origin?: "manual" | "auto" | "preset";
+  rationale?: string;
 }
 
 export interface Conversation {
@@ -255,6 +264,8 @@ export interface Conversation {
   alternates?: Record<string, TurnVersion[]>;
   /** the assistant's working plan (shown as a checklist) */
   plan?: PlanItem[];
+  /** the consortium's shared scratchpad (latest run) */
+  scratchpad?: { by: string; text: string; at: number }[];
   forkedFrom?: { convId: string; messageId: string };
   messages: Message[];
   /** message id -> time it was removed (regenerate / edit), so merges do not resurrect it */

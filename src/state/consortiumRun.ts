@@ -61,7 +61,13 @@ interface Hooks {
 }
 
 /** Shared scratchpad and questions between members, for one run. */
-function teamTools(cfg: ConsortiumConfig, me: ConsortiumMember, pad: { by: string; text: string }[], ask: (to: ConsortiumMember, from: ConsortiumMember, q: string) => Promise<string>): Tool[] {
+interface Pad {
+  push(e: { by: string; text: string }): void;
+  readonly length: number;
+  map<T>(fn: (e: { by: string; text: string }) => T): T[];
+}
+
+function teamTools(cfg: ConsortiumConfig, me: ConsortiumMember, pad: Pad, ask: (to: ConsortiumMember, from: ConsortiumMember, q: string) => Promise<string>): Tool[] {
   return [
     {
       group: "files",
@@ -113,7 +119,21 @@ export async function runConsortiumTurn(c: Conversation, signal: AbortSignal, ho
   const settings = hooks.host.settings();
   const { agent, project } = contextOf(hooks.host, c);
   const chatModel = currentRef(settings, c, agent, project);
-  const pad: { by: string; text: string }[] = [];
+  // the scratchpad lives on the chat, so the team panel shows it and it is saved
+  c.scratchpad = [];
+  const pad = {
+    push(e: { by: string; text: string }) {
+      c.scratchpad = [...(c.scratchpad ?? []), { ...e, at: Date.now() }];
+      hooks.render(c);
+      hooks.saveSoon(c);
+    },
+    get length() {
+      return c.scratchpad?.length ?? 0;
+    },
+    map<T>(fn: (e: { by: string; text: string }) => T): T[] {
+      return (c.scratchpad ?? []).map(fn);
+    },
+  };
 
   const speakIn = async (m: ConsortiumMember, system: string, prompt: string, opts: { tools: boolean; maxSteps: number; signal: AbortSignal; extraTools?: Tool[] }) => {
     const now = Date.now();

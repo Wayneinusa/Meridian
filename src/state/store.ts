@@ -2,7 +2,7 @@
 // memories, plugins, automations), sync and backup. The agent loop itself
 // lives in agent/engine.ts; this file supplies it with UI hooks.
 import { create } from "zustand";
-import { contextOf, currentRef, runTurn, suggestTitle, type EngineHost } from "../agent/engine";
+import { completeOnce, contextOf, currentRef, runTurn, suggestTitle, type EngineHost } from "../agent/engine";
 import { initPlatform, invoke, isTauri, joinPath, platform } from "../platform";
 import { saveFile } from "../platform/files";
 import { notify } from "../platform/notify";
@@ -31,6 +31,7 @@ import { nativeTools } from "../connectors/native";
 import { bankTools } from "../connectors/banks";
 import { mcpManager } from "../tools/mcp";
 import { mediaModelFor, noMediaModelMessage } from "../tools/media";
+import { modelOptions, parseProposal, plannerPrompt, type Proposal, type TeamRequest } from "../agent/teamPlanner";
 import type { PermissionPreview, Tool } from "../tools/types";
 import { killComputerUse, rearmComputerUse } from "../tools/computer-use";
 import { closeSession, onBrowserView, type BrowserView } from "../browser/session";
@@ -107,7 +108,9 @@ export type View =
   | { name: "prompts" }
   | { name: "automations" }
   | { name: "usage" }
-  | { name: "search" };
+  | { name: "search" }
+  /** the Consortium studio: build a team (manual, automatic or from a preset); edit: the open chat's team */
+  | { name: "consortium"; edit?: boolean };
 
 export type LibState = { [C in CollectionName]: CollectionTypes[C][] };
 
@@ -140,6 +143,8 @@ interface State {
   sync: SyncStatus;
   sidebarOpen: boolean;
   settingsTab: string | null;
+  /** the Team panel beside consortium chats */
+  teamOpen: boolean;
   /** Settings → Customize opens this model's settings (providerId::modelId) */
   customizeModel?: string;
   paramsOpen: boolean;
@@ -176,6 +181,7 @@ export const useApp = create<State>(() => ({
   sync: { state: "off" },
   sidebarOpen: typeof window !== "undefined" ? window.innerWidth > 860 : true,
   settingsTab: null,
+  teamOpen: true,
   paramsOpen: false,
   preview: null,
   composerInbox: { parts: [], seq: 0 },
@@ -613,6 +619,24 @@ export const setChatParams = (params: ModelParams | undefined) => patchChat({ pa
 export const setChatSystemPrompt = (text: string) => patchChat({ systemPrompt: text || undefined });
 /** Turn consortium mode on with this team, or off (undefined). */
 export const setConsortium = (cfg: ConsortiumConfig | undefined) => patchChat({ consortium: cfg, mode: cfg ? "consortium" : undefined }, { consortium: cfg, mode: cfg ? "consortium" : undefined });
+/** Automatic team: a strong model proposes members, roles and models for the task. */
+export async function proposeTeam(req: TeamRequest, planner: ModelRef | undefined, signal: AbortSignal): Promise<Proposal> {
+  const settings = get().settings;
+  const models = modelOptions(allProviders(settings), req.providers ?? []);
+  if (models.length < 1) throw new Error("No chat model with tool use is ready. Add a key in Settings → Providers & keys.");
+  const ref = planner ?? settings.defaultModel ?? models[0].ref;
+  const { system, prompt } = plannerPrompt(req, models);
+  const text = await completeOnce(host, ref, system, prompt, signal, 3000);
+  return parseProposal(text, req, models, settings.defaultModel);
+}
+
+/** Start a consortium: a new chat with this team, given the task. */
+export async function startConsortium(cfg: ConsortiumConfig, task: string) {
+  newChat();
+  setConsortium(cfg);
+  if (task.trim()) await send(task.trim());
+}
+
 export const consortiumStop = (memberId: string) => {
   const id = get().activeId;
   if (id) stopMember(id, memberId);

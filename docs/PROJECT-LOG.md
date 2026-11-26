@@ -151,3 +151,12 @@ Tested with unit tests and mocked e2e; not yet against xAI's real service.
 - **Global:** a response style (presets or your own words), "what models should know about you", and the existing standing instructions.
 - **Per model:** overrides with a field-level fallback to Global; instructions can replace the global ones or be added to them.
 - **Managing it:** **Use Global** clears a model's settings, a "what this model receives" preview shows the result, and the chat's parameters panel shows Global or its own with a shortcut. This works for every provider. Consortium members use their own model's customization.
+
+**Part 3 delivered:** the Consortium as a first-class, full-page studio.
+
+- **Manual teams:** 2–6 agents, each with a name, a role, a model and provider, and an optional saved agent; a coordinator, and members can be reordered.
+- **Automatic teams:** a strong model proposes the size, roles, models and a rationale, which you can edit or regenerate.
+- **Quick starts**, including operational crews.
+- **A new execution-crew mode:** jobs run at the same time, an auditor checks, there is one fix pass, then a report, with no voting.
+- **A Team panel** beside the chat with live status, the shared scratchpad and the controls.
+- The existing discussion-and-vote flow is unchanged.

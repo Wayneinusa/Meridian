@@ -10,6 +10,7 @@ import { AutomationsPage } from "./ui/pages/Automations";
 import { SearchPage, UsagePage } from "./ui/pages/Misc";
 import { ProjectPage, ProjectsPage } from "./ui/pages/Projects";
 import { PromptsPage } from "./ui/pages/Prompts";
+import { ConsortiumPage } from "./ui/pages/ConsortiumPage";
 import { Icon } from "./ui/icons";
 import { Shortcuts } from "./ui/Shortcuts";
 import { SettingsModal } from "./ui/SettingsModal";
@@ -66,6 +67,7 @@ export function App() {
           {view.name === "automations" && <AutomationsPage />}
           {view.name === "search" && <SearchPage />}
           {view.name === "usage" && <UsagePage />}
+          {view.name === "consortium" && <ConsortiumPage edit={view.edit} />}
         </main>
       )}
       {settingsTab && <SettingsModal />}
