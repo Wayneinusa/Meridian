@@ -180,7 +180,8 @@ describe("Sign in with X", () => {
       return Response.json({ data: [{ id: "grok-imagine-image" }] });
     });
     const models = await xaiAdapter.listModels(provider({ signedIn: true, hasKey: false }), "");
-    expect(models.map((m) => `${m.id}:${m.kind}`)).toEqual(["grok-4.6:chat", "grok-imagine-image:image"]);
+    expect(models.map((m) => `${m.id}:${m.kind}`)).toEqual(expect.arrayContaining(["grok-4.6:chat", "grok-imagine-image:image", "grok-imagine-video:video"]));
+    expect(models.some((m) => /composer|hidden/.test(m.id))).toBe(false);
   });
 });
 

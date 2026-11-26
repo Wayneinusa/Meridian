@@ -20,7 +20,7 @@ import type { ModelInfo, Part, ProviderConfig } from "../types";
 import { uid } from "../types";
 import { clientToolCalls, resultOf, sseEvents, trimSlash, userItems } from "./common";
 import { openaiAdapter } from "./openai";
-import { ProviderError, type ChatRequest, type ChatResult, type ProviderAdapter, type StopKind } from "./types";
+import { NativeSearchUnavailable, ProviderError, type ChatRequest, type ChatResult, type ProviderAdapter, type StopKind } from "./types";
 
 export const XAI_ISSUER = "https://auth.x.ai";
 export const XAI_AUTHORIZE = `${XAI_ISSUER}/oauth2/authorize`;
@@ -82,6 +82,37 @@ async function versionGate(res: Response, again: () => Promise<Response>): Promi
 }
 
 type Json = Record<string, any>;
+
+// ---------------------------------------------------------------- Grok Imagine
+
+const imagine = (id: string, name: string, kind: "image" | "video"): ModelInfo => ({ id, name, kind, caps: { vision: true, pdf: false, tools: false, thinking: false } });
+/** xAI's image and video models (Grok Imagine), best first. Listed even before the model list is loaded. */
+export const IMAGINE_MODELS: ModelInfo[] = [
+  imagine("grok-imagine-image-2.0", "Grok Imagine Image 2.0", "image"),
+  imagine("grok-imagine-image-pro", "Grok Imagine Image Pro", "image"),
+  imagine("grok-imagine-image", "Grok Imagine Image", "image"),
+  imagine("grok-imagine-video-1.5", "Grok Imagine Video 1.5", "video"),
+  imagine("grok-imagine-video", "Grok Imagine Video", "video"),
+];
+export const isImagine = (id: string) => /grok-imagine/.test(id);
+
+/** The Imagine models added to a list that lacks them (kept in the order xAI listed the rest). */
+export function withImagine(models: ModelInfo[]): ModelInfo[] {
+  const missing = IMAGINE_MODELS.filter((m) => !models.some((x) => x.id === m.id));
+  return missing.length ? [...models, ...missing.map((m) => ({ ...m, caps: { ...m.caps } }))] : models;
+}
+
+/**
+ * Bearer tokens for xAI's media API, in the order to try them. Grok Imagine
+ * goes to api.x.ai for both the sign-in and the API key, as in xAI's own tools.
+ */
+export async function xaiMediaTokens(provider: ProviderConfig, apiKey: string): Promise<string[]> {
+  const out: string[] = [];
+  const auth = await xaiAuth(provider, apiKey).catch(() => null);
+  if (auth) out.push(auth.token);
+  if (apiKey && !out.includes(apiKey)) out.push(apiKey);
+  return out;
+}
 
 // ---------------------------------------------------------------- sign-in
 
@@ -178,6 +209,8 @@ async function listModels(provider: ProviderConfig, apiKey: string): Promise<Mod
       if (info) out.set(info.id, info);
     }
   }
+  // Grok Imagine is always offered: the sign-in or the key can use it
+  for (const m of IMAGINE_MODELS) if (!out.has(m.id)) out.set(m.id, { ...m, caps: { ...m.caps } });
   // the API (with a key, or the sign-in where xAI accepts it) also lists image and video models
   const bearer = apiKey || (auth?.mode === "oauth" ? auth.token : "");
   if (bearer) {
@@ -188,6 +221,12 @@ async function listModels(provider: ProviderConfig, apiKey: string): Promise<Mod
     }
   }
   return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** The subscription gateway turned the account away (rather than the request being wrong). */
+function gatewayRefusal(e: ProviderError): boolean {
+  const st = e.status ?? 0;
+  return st === 402 || st === 426 || st === 429 || st >= 500 || (st === 403 && /credits|subscription|spending|plan|access/i.test(e.message)) || /outdated|update to version/i.test(e.message);
 }
 
 function xaiError(status: number, text: string): string {
@@ -287,14 +326,29 @@ function sourcesOf(item: Json): string[] {
   return out;
 }
 
+/** The gateway's request policy, as in xAI's own client: nothing stored, encrypted reasoning returned. */
+export function oauthPolicy(body: Json): Json {
+  const include = Array.isArray(body.include) ? [...body.include] : [];
+  if (!include.includes("reasoning.encrypted_content")) include.push("reasoning.encrypted_content");
+  return { ...body, store: false, include };
+}
+
+/** Errors that mean "this request's search tools were refused", not "the account or sign-in is wrong". */
+const ACCOUNT_TROUBLE = /spending-limit|subscription|credits|outdated|update to version|unauthori[sz]ed|expired|invalid.*token|permission/i;
+function nativeRefused(status: number, text: string): boolean {
+  if (ACCOUNT_TROUBLE.test(text)) return false;
+  if ([400, 404, 422, 501].includes(status)) return true;
+  return status === 403 && /tool|search|x_search|web_search/i.test(text);
+}
+
 async function responsesChat(req: ChatRequest, auth: XaiAuth, native: boolean): Promise<ChatResult> {
-  const body = buildResponsesBody(req, await toInput(req), native);
+  let body = buildResponsesBody(req, await toInput(req), native);
   const conv = req.messages[0]?.id ?? uid("c");
   const post = (a: XaiAuth) =>
     httpFetch(a.mode === "oauth" ? `${XAI_GATEWAY}/responses` : `${trimSlash(req.provider.baseUrl)}/responses`, {
       method: "POST",
       headers: a.mode === "oauth" ? gatewayHeaders(a, req.model.id, conv, true) : { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: `Bearer ${a.token}`, ...(req.provider.headers ?? {}) },
-      body: JSON.stringify(body),
+      body: JSON.stringify(a.mode === "oauth" ? oauthPolicy(body) : body),
       signal: req.signal,
     });
   let res = await post(auth);
@@ -305,6 +359,22 @@ async function responsesChat(req: ChatRequest, auth: XaiAuth, native: boolean): 
     if (!/spending-limit|subscription|credits/i.test(text)) {
       const fresh = await xaiAuth(req.provider, req.apiKey, true);
       if (fresh?.mode === "oauth") res = await post(fresh);
+    }
+  }
+  if (!res.ok && native) {
+    const text = await res.clone().text().catch(() => "");
+    if (nativeRefused(res.status, text)) {
+      // first without the extra source listing, which some routes do not accept
+      if (body.include) {
+        const { include: _drop, ...rest } = body;
+        body = rest;
+        res = await post(auth);
+      }
+      if (!res.ok) {
+        const again = await readError(res);
+        if (nativeRefused(res.status, again)) throw new NativeSearchUnavailable(again.slice(0, 160), res.status);
+        throw new ProviderError(xaiError(res.status, again), res.status);
+      }
     }
   }
   if (!res.ok) throw new ProviderError(xaiError(res.status, await readError(res)), res.status);
@@ -427,7 +497,9 @@ async function responsesChat(req: ChatRequest, auth: XaiAuth, native: boolean): 
       case "response.failed":
       case "error": {
         const err = e.response?.error ?? e.error ?? e;
-        throw new ProviderError(err.message ?? "xAI could not finish the reply.");
+        const msg = String(err.message ?? "xAI could not finish the reply.");
+        if (native && /search|x_search|web_search|tool/i.test(msg) && !ACCOUNT_TROUBLE.test(msg)) throw new NativeSearchUnavailable(msg.slice(0, 160));
+        throw new ProviderError(msg);
       }
     }
     req.onUpdate(snapshot(false));
@@ -458,8 +530,16 @@ export const xaiAdapter: ProviderAdapter = {
   async chat(req) {
     const auth = await xaiAuth(req.provider, req.apiKey);
     if (!auth) throw new ProviderError("Grok needs an API key or Sign in with X (Settings → Providers & keys → xAI).");
-    // xAI's own search and the subscription gateway both need the Responses API
-    if (req.options.webSearch || auth.mode === "oauth") return responsesChat(req, auth, req.options.webSearch);
-    return openaiAdapter.chat({ ...req, apiKey: auth.token });
+    const withKey = (key: string) => (req.options.webSearch ? responsesChat(req, { mode: "key", token: key }, true) : openaiAdapter.chat({ ...req, apiKey: key }));
+    if (auth.mode === "key") return withKey(auth.token);
+    // the subscription gateway speaks the Responses API, with or without xAI's search
+    try {
+      return await responsesChat(req, auth, req.options.webSearch);
+    } catch (e) {
+      // the gateway refused the account (no credits, plan, version, outage): the API key still works
+      if (!req.apiKey || !(e instanceof ProviderError) || e instanceof NativeSearchUnavailable || !gatewayRefusal(e)) throw e;
+      const r = await withKey(req.apiKey);
+      return { ...r, notice: `Grok's subscription gateway refused this request (${e.message.slice(0, 140)}), so it went through your xAI API key instead.` };
+    }
   },
 };

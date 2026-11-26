@@ -129,3 +129,19 @@ Sign in with X now works on Windows (0.2.18).
 **Cause:** xAI's subscription gateway refuses clients that report a version older than 1.0.13, and Meridian reported "1".
 
 **Fix:** Meridian reports a version the gateway accepts. If xAI raises the minimum again, Meridian reads the new number from the refusal, remembers it and retries once, so it should not break the same way again. Tested against a mock that raises the minimum.
+
+## 12. Grok native search, Grok Imagine, per-model styles, Consortium redesign, Skills
+
+**Request** (four parts, built in this order):
+
+1. Reliable Grok native search with both sign-in methods, a visible status, graceful fallbacks, and Claude unaffected. Grok Imagine as a first-class backend that Grok chats prefer and that any model can use.
+2. Per-model custom instructions with a fallback to the global ones.
+3. Consortium as a full-width experience, with manual and automatic teams, operational crews and per-member models.
+4. A first-class Skills system (SKILL.md).
+
+**Part 1 delivered:**
+
+- **Search:** native search on both routes; a search chip in the composer; fallback to Meridian's search with a note when xAI refuses its own; a fallback to the API key when the subscription gateway refuses the account. The gateway gets xAI's request policy (`store: false`, encrypted reasoning).
+- **Grok Imagine:** always listed and works with Sign in with X (requests go to api.x.ai with the sign-in, falling back to the key). Grok chats use it unless the chat has its own pick, with a switch to turn that off. Switching modes no longer changes saved defaults.
+
+Tested with unit tests and mocked e2e; not yet against xAI's real service.

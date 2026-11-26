@@ -1,7 +1,7 @@
 import type { ModelInfo, ModelRef, ProviderConfig, ProviderKind, Settings } from "../types";
 import { ANTHROPIC_DEFAULT_MODELS, anthropicAdapter } from "./anthropic";
 import { geminiAdapter } from "./gemini";
-import { xaiAdapter } from "./xai";
+import { IMAGINE_MODELS, withImagine, xaiAdapter } from "./xai";
 import { classifyMediaId, openaiAdapter } from "./openai";
 import { BACKENDS, backendModels, HORDE_DEFAULT_MODELS, isMediaOnly, POLLINATIONS_DEFAULT_MODELS } from "./backends";
 import { ProviderError, type ProviderAdapter } from "./types";
@@ -39,6 +39,11 @@ export function getPluginProviders(): ProviderConfig[] {
   return pluginProviders;
 }
 
+/** Older settings: the xAI provider lists Grok Imagine too. */
+export function withImagineModels(providers: ProviderConfig[]): ProviderConfig[] {
+  return providers.map((p) => (p.kind === "xai" ? { ...p, models: withImagine(p.models) } : p));
+}
+
 /** Providers from settings plus plugin engines. */
 export function allProviders(settings: Settings): ProviderConfig[] {
   return pluginProviders.length ? [...settings.providers, ...pluginProviders] : settings.providers;
@@ -49,7 +54,8 @@ export function defaultProviders(): ProviderConfig[] {
     { id: "anthropic", kind: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com", enabled: true, models: ANTHROPIC_DEFAULT_MODELS },
     { id: "openai", kind: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", enabled: true, models: [] },
     { id: "gemini", kind: "gemini", name: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", enabled: true, models: [] },
-    { id: "xai", kind: "xai", name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1", enabled: true, models: [] },
+    // Grok Imagine is listed from the start, so it shows as an image / video backend before sign-in
+    { id: "xai", kind: "xai", name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1", enabled: true, models: IMAGINE_MODELS.map((m) => ({ ...m, caps: { ...m.caps } })) },
     // free image (and, with a free key, video) generation that works with no setup
     backendProvider("pollinations"),
     backendProvider("horde"),

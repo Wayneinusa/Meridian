@@ -9,6 +9,7 @@ const S = ({ children }: { children: ReactNode }) => (
 export const Icon = {
   menu: () => <S><path d="M4 7h16M4 12h16M4 17h16" /></S>,
   plus: () => <S><path d="M12 5v14M5 12h14" /></S>,
+  info: () => <S><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 7.5v.01" /></S>,
   alert: () => <S><path d="M12 3l9.5 16.5h-19z" /><path d="M12 10v4M12 17.5v.01" /></S>,
   chat: () => <S><path d="M4 5h16v11H9l-5 4z" /></S>,
   bank: () => <S><path d="M3 9l9-5 9 5M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 20h18" /></S>,

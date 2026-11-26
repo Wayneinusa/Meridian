@@ -1,13 +1,61 @@
+import { providerReady } from "../providers/backends";
 import { generateImages, generateVideo, pickDefaultMedia, type MediaInput } from "../providers/media";
+import { IMAGINE_MODELS } from "../providers/xai";
 import { allProviders, findModel } from "../providers/registry";
 import type { BlobRef, MediaOptions, ModelRef, Settings } from "../types";
 import type { Tool, ToolContext } from "./types";
 
-/** The media model to use: the one chosen in Settings, else the best one available. */
-export function mediaModelFor(settings: Settings, kind: "image" | "video"): ModelRef | undefined {
+/** What a chat contributes to the choice: its own backend pick and its chat model. */
+export interface MediaChat {
+  mediaModels?: { image?: ModelRef; video?: ModelRef };
+  model?: ModelRef;
+  chatModel?: ModelRef;
+}
+
+/** Grok Imagine on an xAI provider that can use it (signed in or with a key). */
+export function imagineFor(settings: Settings, kind: "image" | "video"): ModelRef | undefined {
+  for (const p of settings.providers) {
+    if (p.kind !== "xai" || !providerReady(p, kind)) continue;
+    const best = IMAGINE_MODELS.filter((m) => m.kind === kind).find((m) => p.models.some((x) => x.id === m.id && x.kind === kind));
+    if (best) return { providerId: p.id, modelId: best.id };
+  }
+  return undefined;
+}
+
+/** The chat model of a chat (the one it returns to from Image / Video mode). */
+function chatModelOf(settings: Settings, chat: MediaChat): ModelRef | undefined {
+  const cur = findModel(settings, chat.model);
+  return cur?.model.kind === "chat" ? chat.model : chat.chatModel;
+}
+
+/** Why a model was picked, for the backend menu. */
+export type MediaReason = "chat" | "grok" | "default" | "auto";
+
+/**
+ * The media model to use, in this order:
+ * 1. the backend picked for this chat;
+ * 2. Grok Imagine, when the chat talks to Grok (unless turned off in Settings);
+ * 3. the default chosen in Settings;
+ * 4. the best one available (free services first).
+ */
+export function mediaChoice(settings: Settings, kind: "image" | "video", chat?: MediaChat): { ref: ModelRef; reason: MediaReason } | undefined {
+  const own = chat?.mediaModels?.[kind];
+  if (own && findModel(settings, own)) return { ref: own, reason: "chat" };
+  if (chat && settings.grokImagine !== false) {
+    const talk = findModel(settings, chatModelOf(settings, chat));
+    if (talk?.provider.kind === "xai") {
+      const im = imagineFor(settings, kind);
+      if (im) return { ref: im, reason: "grok" };
+    }
+  }
   const chosen = kind === "image" ? settings.imageModel : settings.videoModel;
-  if (chosen && findModel(settings, chosen)) return chosen;
-  return pickDefaultMedia(allProviders(settings), kind);
+  if (chosen && findModel(settings, chosen)) return { ref: chosen, reason: "default" };
+  const auto = pickDefaultMedia(allProviders(settings), kind);
+  return auto ? { ref: auto, reason: "auto" } : undefined;
+}
+
+export function mediaModelFor(settings: Settings, kind: "image" | "video", chat?: MediaChat): ModelRef | undefined {
+  return mediaChoice(settings, kind, chat)?.ref;
 }
 
 export function noMediaModelMessage(kind: "image" | "video"): string {
@@ -27,9 +75,9 @@ export interface CreateMediaArgs {
 /** Shared by the tools below and by chats whose selected model is itself an image or video model. */
 export async function createMedia(
   args: CreateMediaArgs,
-  ctx: Pick<ToolContext, "settings" | "getKey" | "loadBlob" | "saveBlob" | "signal" | "progress">,
+  ctx: Pick<ToolContext, "settings" | "getKey" | "loadBlob" | "saveBlob" | "signal" | "progress"> & { conversation?: () => MediaChat },
 ): Promise<{ refs: BlobRef[]; modelName: string }> {
-  const modelRef = args.model ?? mediaModelFor(ctx.settings, args.kind);
+  const modelRef = args.model ?? mediaModelFor(ctx.settings, args.kind, ctx.conversation?.());
   const found = findModel(ctx.settings, modelRef);
   if (!found) throw new Error(noMediaModelMessage(args.kind));
   const apiKey = await ctx.getKey(found.provider.id);
@@ -93,7 +141,7 @@ const generateImage: Tool = {
   needsApproval: () => false,
   summarize: (i) => `Generate image: ${String(i.prompt).slice(0, 80)}`,
   async run(input, ctx) {
-    if (!mediaModelFor(ctx.settings, "image")) return { isError: true, text: noMediaModelMessage("image") };
+    if (!mediaModelFor(ctx.settings, "image", ctx.conversation())) return { isError: true, text: noMediaModelMessage("image") };
     const inputs = inputsFromNames(input.input_images, ctx);
     const { refs, modelName } = await createMedia(
       { kind: "image", prompt: String(input.prompt), inputs, options: { aspect: input.aspect_ratio as MediaOptions["aspect"], count: typeof input.count === "number" ? input.count : 1 } },
@@ -125,7 +173,7 @@ const generateVideoTool: Tool = {
   needsApproval: () => false,
   summarize: (i) => `Generate video: ${String(i.prompt).slice(0, 80)}`,
   async run(input, ctx) {
-    if (!mediaModelFor(ctx.settings, "video")) return { isError: true, text: noMediaModelMessage("video") };
+    if (!mediaModelFor(ctx.settings, "video", ctx.conversation())) return { isError: true, text: noMediaModelMessage("video") };
     const inputs = inputsFromNames(input.start_image ? [input.start_image] : [], ctx);
     const { refs, modelName } = await createMedia(
       { kind: "video", prompt: String(input.prompt), inputs, options: { aspect: input.aspect_ratio as MediaOptions["aspect"], seconds: typeof input.seconds === "number" ? input.seconds : undefined } },

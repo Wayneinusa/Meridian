@@ -173,6 +173,8 @@ export interface Message {
   usage?: Usage;
   stopReason?: string;
   error?: string;
+  /** how this answer was made, when the user should know (a fallback, another route) */
+  notice?: string;
   /**
    * Provider-native content of an assistant turn, replayed verbatim to the same
    * provider (Claude requires thinking blocks to come back unchanged).
@@ -371,6 +373,8 @@ export interface Settings {
   defaultModel?: ModelRef;
   imageModel?: ModelRef;
   videoModel?: ModelRef;
+  /** chats with a Grok model make images and video with Grok Imagine (unless the chat has its own pick). Default on. */
+  grokImagine?: boolean;
   systemPrompt: string;
   /** parameter defaults for every chat */
   params: ModelParams;

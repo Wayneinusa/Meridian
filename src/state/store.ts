@@ -551,7 +551,8 @@ function patchChat(patch: Partial<Conversation>, draftPatch?: Partial<Draft>) {
   saveSoon(c.id, 300);
 }
 
-export async function setChatModel(ref: ModelRef) {
+/** `auto`: the app chose this (switching to Image / Video), so it does not become the saved default. */
+export async function setChatModel(ref: ModelRef, auto = false) {
   const settings = get().settings;
   const kind = findModel(settings, ref)?.model.kind ?? "chat";
   const c = live.get(get().activeId ?? "");
@@ -559,10 +560,11 @@ export async function setChatModel(ref: ModelRef) {
   const curKind = findModel(settings, current)?.model.kind ?? "chat";
   if (!c) {
     const d = get().draft;
-    setDraft({ model: ref, ...(kind !== "chat" && curKind === "chat" ? { chatModel: current } : {}), ...(kind !== "chat" ? { mediaModels: { ...d.mediaModels, [kind]: ref } } : {}) });
+    setDraft({ model: ref, ...(kind !== "chat" && curKind === "chat" ? { chatModel: current } : {}), ...(kind !== "chat" && !auto ? { mediaModels: { ...d.mediaModels, [kind]: ref } } : {}) });
   } else {
     if (kind !== "chat" && curKind === "chat") c.chatModel = current;
-    if (kind !== "chat") c.mediaModels = { ...c.mediaModels, [kind]: ref };
+    // only a backend the user picked is remembered as this chat's own choice
+    if (kind !== "chat" && !auto) c.mediaModels = { ...c.mediaModels, [kind]: ref };
     c.model = ref;
     touch(c);
     render(c.id);
@@ -570,6 +572,7 @@ export async function setChatModel(ref: ModelRef) {
   }
   if (kind === "chat") await updateSettings({ defaultModel: ref });
   // the first image / video backend someone picks becomes the default; after that "Make default" changes it
+  else if (auto) return;
   else if (kind === "image" && !findModel(settings, settings.imageModel)) await updateSettings({ imageModel: ref });
   else if (kind === "video" && !findModel(settings, settings.videoModel)) await updateSettings({ videoModel: ref });
 }
@@ -594,12 +597,12 @@ export async function setChatMode(mode: "chat" | "image" | "video"): Promise<boo
   // already in this mode: keep the backend chosen for this chat
   if (findModel(settings, currentModelRef(c ?? null))?.model.kind === mode) return true;
   const remembered = (c ? c.mediaModels : get().draft.mediaModels)?.[mode];
-  const ref = remembered && findModel(settings, remembered) ? remembered : mediaModelFor(settings, mode);
+  const ref = remembered && findModel(settings, remembered) ? remembered : mediaModelFor(settings, mode, c ?? get().draft);
   if (!ref) {
     toast(noMediaModelMessage(mode), "error");
     return false;
   }
-  await setChatModel(ref);
+  await setChatModel(ref, true);
   return true;
 }
 

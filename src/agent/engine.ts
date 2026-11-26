@@ -6,7 +6,7 @@ import { platform } from "../platform";
 import { pluginSkills, pluginTools, skillsPrompt } from "../plugins/runtime";
 import { resolveParams, supportedParams } from "../providers/params";
 import { adapterFor, findModel } from "../providers/registry";
-import type { BlobAccess } from "../providers/types";
+import { NativeSearchUnavailable, type BlobAccess } from "../providers/types";
 import type { Library } from "../storage/library";
 import type { Repo } from "../storage/repo";
 import { activeTools } from "../tools";
@@ -20,6 +20,7 @@ import { validateInput } from "../tools/validate";
 import { searchTool } from "../tools/web";
 import type { Agent, BlobRef, Conversation, KnowledgeFile, Message, ModelRef, Part, PlanItem, Project, Settings, ToolResultData } from "../types";
 import { uid } from "../types";
+import { hostedSearch, markNativeSearchDown, nativeSearchDown } from "./nativeSearch";
 import { buildSystemPrompt } from "./prompt";
 
 export interface EngineHost {
@@ -133,18 +134,6 @@ function insideFolder(path: unknown, folder: string): boolean {
   return (p === f || p.startsWith(f + "/")) && !p.split("/").includes("..");
 }
 
-/**
- * Claude on Anthropic's API, and Grok on xAI's, search the web themselves
- * (better results, cited; Grok can also search X). Others use Meridian's search tool.
- */
-function hostedSearch(settings: Settings, c: Conversation, agent: Agent | undefined, provider: { kind: string; baseUrl: string; signedIn?: boolean }): boolean {
-  const web = (agent?.tools?.web ?? settings.tools.web) || c.mode === "research";
-  if (!web || !settings.webSearch) return false;
-  if (provider.kind === "anthropic") return /api\.anthropic\.com/.test(provider.baseUrl || "https://api.anthropic.com");
-  if (provider.kind === "xai") return !!provider.signedIn || /api\.x\.ai/.test(provider.baseUrl || "https://api.x.ai/v1");
-  return false;
-}
-
 async function assembleTools(host: EngineHost, c: Conversation, settings: Settings, model: { caps: { tools: boolean } }, agent: Agent | undefined, knowledge: KnowledgeFile[], fullKnowledge: boolean, depth: number, hosted: boolean): Promise<Tool[]> {
   if (!model.caps.tools) return [];
   const switches = { ...settings.tools, ...(agent?.tools ?? {}) };
@@ -188,6 +177,8 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
   let assistantId: string | null = null;
   /** tools the user allowed "for this task" on an approval card: they stop asking until the turn ends */
   const taskAllowed = new Set<string>();
+  /** set when this turn fell back from the provider's own search */
+  let fallbackNotice: string | undefined;
   try {
     for (let step = 0; ; step++) {
       const settings = host.settings();
@@ -240,7 +231,7 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
           knowledgePassages = formatHits(indexFor(k).search(q, 6));
         }
       }
-      const hosted = !opts.noTools && hostedSearch(settings, c, agent, provider);
+      const hosted = !opts.noTools && hostedSearch(settings, c, agent, provider) && !nativeSearchDown(provider.id);
       const tools = opts.noTools ? [] : [...(await assembleTools(host, c, settings, model, agent, knowledge, full, depth, hosted)), ...(model.caps.tools ? (opts.extraTools ?? []) : [])];
       const memories = settings.memory && agent?.memory !== false ? host.library.list("memories").filter((m) => !m.projectId || m.projectId === c.projectId).slice(0, 200) : [];
       const system = buildSystemPrompt({
@@ -276,7 +267,9 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
       c.messages.push(assistant);
       host.render(c);
 
-      const result = await adapterFor(provider.kind).chat({
+      let result: Awaited<ReturnType<ReturnType<typeof adapterFor>["chat"]>>;
+      try {
+        result = await adapterFor(provider.kind).chat({
         provider,
         apiKey,
         model,
@@ -291,8 +284,20 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
         },
         blobs: host.blobs,
       });
+      } catch (e) {
+        // the provider refused its own search: use Meridian's for a while and redo this step
+        if (!(e instanceof NativeSearchUnavailable) || !hosted || opts.signal.aborted) throw e;
+        markNativeSearchDown(provider.id, e.message);
+        const at = c.messages.findIndex((m) => m.id === assistant.id);
+        if (at >= 0) c.messages.splice(at, 1);
+        fallbackNotice = `${provider.kind === "xai" ? "Grok" : "Claude"}'s own search was refused (${e.message}), so Meridian's web search was used instead.`;
+        host.render(c);
+        step--;
+        continue;
+      }
 
       patchMessage(host, c, assistant.id, {
+        notice: [result.notice, fallbackNotice].filter(Boolean).join(" ") || undefined,
         parts: result.parts,
         raw: result.raw,
         usage: result.usage,

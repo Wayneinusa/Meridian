@@ -42,6 +42,8 @@ export interface ChatResult {
   raw?: Message["raw"];
   /** set when a different model than requested produced the answer */
   servedBy?: string;
+  /** something the user should know about how this answer was made (shown under it) */
+  notice?: string;
 }
 
 export interface ProviderAdapter {
@@ -53,5 +55,17 @@ export class ProviderError extends Error {
   constructor(message: string, public readonly status?: number) {
     super(message);
     this.name = "ProviderError";
+  }
+}
+
+/**
+ * The provider's own search (xAI's web_search / x_search, Anthropic's web search)
+ * was refused for this request. The engine retries the step with Meridian's
+ * search instead.
+ */
+export class NativeSearchUnavailable extends ProviderError {
+  constructor(message: string, status?: number) {
+    super(message, status);
+    this.name = "NativeSearchUnavailable";
   }
 }

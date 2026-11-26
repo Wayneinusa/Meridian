@@ -57,7 +57,8 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 | Area | Where |
 |---|---|
 | Providers: Claude (official SDK), OpenAI, Gemini, xAI, OpenAI-compatible presets including Runpod and Hostinger. A Model ID field and Wake up for cold models. | `src/providers/` |
-| Grok: Responses API with native `web_search` and `x_search`, Sign in with X (browser and device code; a paste box for the code xAI's page may show) | `src/providers/xai.ts`, `src/connectors/oauth.ts`, `src-tauri/src/oauth.rs` |
+| Grok: Responses API with native `web_search` and `x_search` for key and sign-in; search chip in the composer; fallback to Meridian's search when xAI refuses its own (`NativeSearchUnavailable`, 30 min); gateway refusal falls back to the key with a notice. Sign in with X (browser and device code; paste box) | `src/providers/xai.ts`, `src/agent/nativeSearch.ts`, `src/connectors/oauth.ts`, `src-tauri/src/oauth.rs` |
+| Grok Imagine: always-listed backend (t2i, edit, t2v, i2v) with the sign-in or key (api.x.ai); used by Grok chats unless the chat has its own pick (`grokImagine` setting); any model can use it | `src/providers/xai.ts` (`IMAGINE_MODELS`, `xaiMediaTokens`), `src/tools/media.ts` (`mediaChoice`), `src/ui/BackendPicker.tsx` |
 | Images and video: Pollinations, AI Horde, Cloudflare, fal.ai, Runway, custom templates, plugin engines. A backend picker with separate image and video defaults. | `src/providers/backends.ts`, `media.ts`, `mediaUtil.ts`, `src/ui/BackendPicker.tsx` |
 | Agents, projects (knowledge with BM25), prompts and slash commands, memory, plan checklist, questions, sub-agents (`delegate`), research mode | `src/agent/`, `src/tools/assistant.ts`, `src/knowledge/` |
 | Plugins: Claude format, TypingMind single- and multi-function, Meridian JSON; sandboxed JS with standard `fetch`; plugin image/video engines | `src/plugins/`, `src/tools/sandbox.ts` |
@@ -88,13 +89,13 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 
 ```bash
 npm install
-npm run typecheck && npx vitest run      # 135 unit tests (18 files)
+npm run typecheck && npx vitest run      # 148 unit tests (19 files)
 (cd src-tauri && cargo test --lib)       # Rust tests (sign-in listener, keychain splitting)
 npm run build                            # web bundle for the e2e suites
 node e2e/run.cjs                          # 62 checks, core app        (port 4173)
 node e2e/features.cjs                     # 35 checks, library etc.    (port 4175)
 node e2e/media-sync.cjs                   # 23 checks, free media, sync (port 4176)
-node e2e/grok-banks.cjs                   # 23 checks, Grok, banks, UI  (port 4177)
+node e2e/grok-banks.cjs                   # 37 checks, Grok, banks, UI  (port 4177)
 node e2e/consortium.cjs                   # 15 checks, consortium       (port 4178)
 npx tauri build --debug --no-bundle && xvfb-run -a node e2e/native.cjs   # real Linux app via tauri-driver
 ```
@@ -120,6 +121,8 @@ npx tauri build --debug --no-bundle && xvfb-run -a node e2e/native.cjs   # real 
 - **Sign in with X:** xAI's page (auth.x.ai) does not always redirect. Its script hands the code to `http://127.0.0.1:56121/callback` with fetch, which a browser only allows after a CORS and Private Network Access preflight. `oauth.rs` answers OPTIONS with those headers and accepts the code by GET or POST. When that still fails, the page says "Enter this code… into Grok Build"; the card's paste box finishes sign-in (`manualRedirect` in `oauth.ts`, safe because PKCE ties the code to this attempt).
 - **Windows Credential Manager holds at most 1280 characters per entry** (2560 bytes of UTF-16). OAuth tokens are often longer (xAI's are three JWTs), so `secrets.rs` splits long values into `<name>#0…` parts behind a `CHUNKS` head entry. Sign-in "worked in the browser but nothing changed in the app" was this: saving the tokens failed. Sign-in errors now stay on the card, not only in a toast.
 - **xAI's subscription gateway gates on `x-grok-client-version`**: it answers 426 "Your Grok CLI version (…) is outdated. Please update to version X or later". Meridian sends at least 1.0.13 and, on a refusal that names a newer minimum, adopts it (saved in localStorage) and retries once (`adoptRequiredVersion` in `xai.ts`).
+- **Media choice order** (`mediaChoice`): the chat's own pick → Grok Imagine for Grok chats → saved default → automatic. Switching to Image/Video calls `setChatModel(ref, true)`, which neither saves a default nor records a per-chat pick; only an explicit pick does.
+- **Native search fallback:** the xAI adapter throws `NativeSearchUnavailable` only for request-shaped refusals (400/404/422/501, or tool errors in the stream), never for credits, sign-in or version problems. The engine removes the half-made answer, marks the provider in `nativeSearch.ts` and redoes the step.
 - Under full parallel load the xlsx test in `tests/tools.test.ts` can pass its 5 s timeout; rerun it alone before chasing it.
 
 ## Where things are

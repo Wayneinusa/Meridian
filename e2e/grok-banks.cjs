@@ -17,7 +17,8 @@ const check = (name, cond, extra = "") => {
   console.log(`${cond ? "  ok  " : "  FAIL"} ${name}${cond ? "" : ` ${extra}`}`);
   if (!cond) failures++;
 };
-const seen = { responses: [], gateway: [], claude: [], simplefin: [] };
+const seen = { responses: [], gateway: [], claude: [], simplefin: [], images: [] };
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
 const LONG = "anthropic-claude-opus-with-a-very-long-model-name-for-width-2026";
 
@@ -58,6 +59,10 @@ async function mocks(page) {
     if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: CORS });
     const p = new URL(req.url()).pathname;
     if (p === "/v1/models") return json(route, { data: [{ id: "grok-4" }, { id: "grok-imagine-image" }] });
+    if (p === "/v1/images/generations") {
+      seen.images.push({ auth: req.headers()["authorization"], body: req.postDataJSON() });
+      return json(route, { data: [{ b64_json: PNG }] });
+    }
     if (p === "/v1/responses") {
       seen.responses.push(req.postDataJSON());
       return route.fulfill({
@@ -85,8 +90,11 @@ async function mocks(page) {
     const req = route.request();
     if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: CORS });
     const p = new URL(req.url()).pathname;
-    seen.gateway.push({ path: p, auth: req.headers()["authorization"] });
+    const body = req.method() === "POST" ? req.postDataJSON() : undefined;
+    seen.gateway.push({ path: p, auth: req.headers()["authorization"], body });
     if (p === "/v1/models-v2") return json(route, { data: [{ id: "grok-4.6", name: "Grok 4.6", contextWindow: 256000 }] });
+    // a model that refuses xAI's own search tools: the app must fall back to Meridian's search
+    if (JSON.stringify(body?.input ?? "").includes("REFUSE-SEARCH") && (body?.tools ?? []).some((t) => t.type === "x_search")) return json(route, { error: "Tool x_search is not supported for this model" }, 400);
     return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "text/event-stream" }, body: sse([{ type: "response.output_text.delta", output_index: 0, delta: "Hello from your subscription." }, { type: "response.completed", response: { status: "completed" } }]) });
   });
   await page.route("https://bridge.test/**", (route) => {
@@ -159,6 +167,8 @@ async function main() {
 
     console.log("Grok with native web and X search");
     await page.locator(".model-pop .menu-item", { hasText: "grok-4" }).first().click();
+    await page.waitForSelector('[data-testid="search-chip"]');
+    check("the composer says Grok's native search is active", (await page.locator('[data-testid="search-chip"]').getAttribute("data-using")) === "grok" && /Grok native search/.test(await page.locator('[data-testid="search-chip"]').textContent()));
     await send(page, "what happened with the launch?");
     await page.waitForSelector(".msg.assistant .tool", { timeout: 20000 });
     await idle(page);
@@ -205,6 +215,39 @@ async function main() {
     await page.waitForFunction(() => /Hello from your subscription/.test(document.querySelector(".messages")?.textContent ?? ""), null, { timeout: 20000 });
     await idle(page);
     check("signed in: chat goes to the subscription gateway, not the API key", seen.gateway.some((g) => g.path === "/v1/responses" && g.auth === "Bearer x-oauth") && seen.responses.length === before);
+    const viaGateway = seen.gateway.filter((g) => g.path === "/v1/responses").at(-1);
+    check("signed in: the gateway gets xAI's web_search and x_search too", (viaGateway?.body?.tools ?? []).some((t) => t.type === "web_search") && viaGateway.body.tools.some((t) => t.type === "x_search"), JSON.stringify(viaGateway?.body?.tools));
+
+    console.log("native search refused: falls back to Meridian's search");
+    const gwBefore = seen.gateway.length;
+    await send(page, "REFUSE-SEARCH what is new?");
+    await page.waitForSelector(".msg.assistant .notice-line", { timeout: 20000 });
+    await idle(page);
+    const retried = seen.gateway.slice(gwBefore).filter((g) => g.path === "/v1/responses");
+    const last = retried.at(-1)?.body;
+    check("the step was redone without xAI's search, with Meridian's search tool", !!last && !last.tools.some((t) => t.type === "x_search") && last.tools.some((t) => t.name === "web_search"), JSON.stringify(last?.tools?.map((t) => t.type + ":" + (t.name ?? ""))));
+    check("the answer says why", /own search was refused/.test(await page.locator(".msg.assistant .notice-line").last().textContent()));
+    check("only one answer for that question", (await page.locator(".msg.assistant").count()) === 3);
+    check("the composer shows the fallback", (await page.locator('[data-testid="search-chip"]').getAttribute("data-using")) === "meridian" && /native unavailable/.test(await page.locator('[data-testid="search-chip"]').textContent()));
+    await page.screenshot({ path: path.join(SHOTS, "55-search-fallback.png") });
+    await page.locator('[data-testid="search-chip"] button', { hasText: "retry" }).click();
+    check("retry brings Grok's own search back", (await page.locator('[data-testid="search-chip"]').getAttribute("data-using")) === "grok");
+
+    console.log("Grok Imagine in a Grok chat, with the sign-in");
+    await page.getByRole("radio", { name: "Image" }).click();
+    await page.waitForSelector(".backend-btn");
+    check("a Grok chat makes images with Grok Imagine", /Grok Imagine \(xAI\)/.test(await page.locator(".backend-btn").textContent()), await page.locator(".backend-btn").textContent());
+    await page.locator(".backend-btn").click();
+    check("the backend menu lists Grok Imagine and marks it for Grok chats", (await page.locator(".backend-pop .backend-group", { hasText: "Grok Imagine (xAI)" }).count()) === 1 && (await page.locator(".backend-pop .badge", { hasText: "Grok chats" }).count()) === 1);
+    check("switching a Grok chat to Image does not change the saved default", (await page.locator(".backend-pop .backend-item", { hasText: "Grok Imagine Image 2.0" }).locator(".badge", { hasText: "Default" }).count()) === 0);
+    check("the Grok Imagine rule can be turned off", (await page.locator(".backend-pop label", { hasText: "Use Grok Imagine in Grok chats" }).count()) === 1);
+    await page.screenshot({ path: path.join(SHOTS, "56-grok-imagine.png") });
+    await page.locator(".backend-btn").click();
+    await send(page, "a red fox in snow");
+    await page.waitForFunction(() => document.querySelectorAll(".msg.assistant img").length > 0, null, { timeout: 20000 });
+    await idle(page);
+    check("the image came from Grok Imagine with the sign-in token", seen.images.length === 1 && seen.images[0].auth === "Bearer x-oauth" && /grok-imagine-image/.test(seen.images[0].body.model), JSON.stringify(seen.images));
+    await page.getByRole("radio", { name: "Chat" }).click();
 
     console.log("bank connection and approval inside the chat");
     await settings(page, "Connectors");

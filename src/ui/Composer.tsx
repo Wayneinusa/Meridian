@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { platform } from "../platform";
 import { expandCommand, pluginCommands } from "../plugins/runtime";
 import { findModel } from "../providers/registry";
+import { clearNativeSearchDown, onNativeSearchChange, searchStatus } from "../agent/nativeSearch";
 import { attachFile, currentModelRef, getKey, send, setChatMedia, setChatMode, stop, toast, updateSettings, useApp } from "../state/store";
 import type { MediaOptions, ModelRef, Part, Settings } from "../types";
 import { record, speak, stopSpeaking, transcribe, type Recording } from "../voice";
@@ -421,6 +422,7 @@ export function Composer() {
               {compareOpen && <CompareMenu selected={compare} onChange={(r) => void updateSettings({ compareModels: r })} onClose={() => setCompareOpen(false)} />}
             </span>
           )}
+          {mode === "chat" && found && <SearchChip />}
           <div className="seg mode-seg" role="radiogroup" aria-label="What to create">
             {(["chat", "image", "video"] as const).map((m) => (
               <button key={m} role="radio" aria-checked={mode === m} className={mode === m ? "sel" : ""} disabled={busy} onClick={() => void setChatMode(m)}>
@@ -505,5 +507,41 @@ export function Composer() {
         />
       )}
     </div>
+  );
+}
+
+/** Which search the next message uses: the provider's own (Grok, Claude) or Meridian's. */
+function SearchChip() {
+  const settings = useApp((s) => s.settings);
+  const active = useApp((s) => s.active);
+  const draft = useApp((s) => s.draft);
+  const agents = useApp((s) => s.lib.agents);
+  const projects = useApp((s) => s.lib.projects);
+  const [, bump] = useState(0);
+  useEffect(() => onNativeSearchChange(() => bump((n) => n + 1)), []);
+  const found = findModel(settings, currentModelRef(active));
+  const projectId = active ? active.projectId : draft.projectId;
+  const agentId = (active ? active.agentId : draft.agentId) ?? projects.find((p) => p.id === projectId)?.agentId;
+  const agent = agents.find((a) => a.id === agentId);
+  const st = searchStatus(settings, { mode: active ? active.mode : draft.mode }, agent, found?.provider);
+  if (st.using === "none") return null;
+  const label = st.using === "grok" ? "Grok native search" : st.using === "claude" ? "Claude native search" : "Meridian search";
+  const title =
+    st.using === "grok"
+      ? "Grok searches the web and X itself (xAI's web_search and x_search) and cites its sources."
+      : st.using === "claude"
+        ? "Claude searches the web itself (Anthropic's web search) and cites its sources."
+        : st.fallbackReason
+          ? `The provider's own search was refused recently, so Meridian's web search is used for now. ${st.fallbackReason}`
+          : "Meridian's web search tool (Settings → Tools). Turn on \"Prefer native provider search\" to let Claude and Grok search themselves.";
+  return (
+    <span className={`search-chip ${st.fallbackReason ? "fallback" : st.using === "meridian" ? "" : "native"}`} title={title} data-testid="search-chip" data-using={st.using}>
+      <Icon.globe /> {st.fallbackReason ? `${label} (native unavailable)` : label}
+      {st.fallbackReason && found && (
+        <button className="link-btn" style={{ fontSize: 12 }} onClick={() => clearNativeSearchDown(found.provider.id)} title="Try the provider's own search again">
+          retry
+        </button>
+      )}
+    </span>
   );
 }

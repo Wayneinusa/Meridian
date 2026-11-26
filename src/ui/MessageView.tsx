@@ -415,6 +415,11 @@ export const MessageView = memo(function MessageView({ message, isLast, busy, ve
       ))}
       {streaming && message.parts.length === 0 && <div className="spinner" aria-label="Waiting for the model" />}
       {message.error && <div className="error-line">{message.error}</div>}
+      {message.notice && !streaming && (
+        <div className="notice-line" role="note">
+          <Icon.info /> {message.notice}
+        </div>
+      )}
       {done && !compact && (
         <div className="msg-actions">
           {text && <button className="icon-btn" title="Copy" onClick={copy}>{copied ? <Icon.check /> : <Icon.copy />}</button>}

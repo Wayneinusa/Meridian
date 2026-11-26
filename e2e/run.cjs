@@ -466,7 +466,7 @@ async function main() {
     const xaiCard = page.locator(".card", { has: page.locator("h4", { hasText: /^xAI \(Grok\)$/ }) }).first();
     await xaiCard.locator('input[type="password"]').fill("xai-test");
     await xaiCard.getByRole("button", { name: "Save" }).click();
-    await page.waitForFunction(() => [...document.querySelectorAll(".toast.ok")].some((t) => /xAI \(Grok\): 3 models/.test(t.textContent)));
+    await page.waitForFunction(() => [...document.querySelectorAll(".toast.ok")].some((t) => /xAI \(Grok\): \d+ models/.test(t.textContent)));
     await closeSettings(page);
     await page.getByRole("button", { name: "New chat" }).click().catch(async () => {
       await page.locator('button[title="Show chats"]').click();
@@ -474,8 +474,9 @@ async function main() {
     });
     await page.locator(".model-btn").click();
     await page.getByRole("tab", { name: "Image" }).click();
-    check("picker lists Grok Imagine as an image model", (await page.getByRole("option", { name: /grok-imagine-image/ }).count()) === 1);
-    await page.getByRole("option", { name: /grok-imagine-image/ }).click();
+    check("picker lists Grok Imagine as an image model", (await page.getByRole("option", { name: /Grok Imagine Image/ }).count()) >= 1);
+    // sorted by id: plain grok-imagine-image comes first
+    await page.getByRole("option", { name: /Grok Imagine Image/ }).first().click();
     check("composer switched to Image mode", (await page.locator('.mode-seg [aria-checked="true"]').textContent()) === "Image");
     await page.locator('select[aria-label="Aspect ratio"]').selectOption("16:9");
     await page.locator('select[aria-label="Number of images"]').selectOption("2");
@@ -492,7 +493,7 @@ async function main() {
     check("edit sent the picture to Grok's edits endpoint", seen.xai[1]?.path === "/v1/images/edits" && /^data:image\/png;base64,/.test(seen.xai[1].body.image?.url ?? ""), JSON.stringify(seen.xai[1]?.path));
     await page.locator(".model-btn").click();
     await page.getByRole("tab", { name: "Video" }).click();
-    await page.getByRole("option", { name: /grok-imagine-video/ }).click();
+    await page.getByRole("option", { name: /Grok Imagine Video/ }).first().click();
     await page.locator(".msg.assistant").last().getByRole("button", { name: "Animate" }).first().click();
     await page.waitForFunction(() => document.querySelectorAll(".composer .chip").length === 1);
     check("Animate switched to Video mode", (await page.locator('.mode-seg [aria-checked="true"]').textContent()) === "Video");

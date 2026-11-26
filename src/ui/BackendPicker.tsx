@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BACKENDS, providerReady, type Pricing } from "../providers/backends";
 import { engineProviders } from "../plugins/engines";
-import { mediaModelFor } from "../tools/media";
-import { currentModelRef, setChatModel, setDefaultMedia, useApp } from "../state/store";
+import { imagineFor, mediaChoice } from "../tools/media";
+import { currentModelRef, setChatModel, setDefaultMedia, updateSettings, useApp } from "../state/store";
 import type { ModelInfo, ModelRef, ProviderConfig } from "../types";
 import { Icon } from "./icons";
 
@@ -13,22 +13,27 @@ export function useProviders(): ProviderConfig[] {
   return useMemo(() => [...providers, ...engineProviders(plugins)], [providers, plugins]);
 }
 
-const PRICE_LABEL: Record<Pricing | "key" | "plugin", string> = {
+const PRICE_LABEL: Record<Pricing | "key" | "plugin" | "xai", string> = {
   free: "Free",
   "free-credits": "Free daily allowance",
   trial: "Pay per use",
   paid: "Paid",
   custom: "Custom",
   key: "Your key",
+  xai: "Sign-in or key",
   plugin: "Plugin",
 };
 
 export function pricingOf(p: ProviderConfig): keyof typeof PRICE_LABEL {
   if (p.kind === "plugin") return "plugin";
+  if (p.kind === "xai") return "xai";
   return BACKENDS[p.kind]?.pricing ?? "key";
 }
 
-const ORDER: (keyof typeof PRICE_LABEL)[] = ["free", "free-credits", "plugin", "key", "trial", "custom", "paid"];
+const ORDER: (keyof typeof PRICE_LABEL)[] = ["free", "free-credits", "plugin", "xai", "key", "trial", "custom", "paid"];
+
+/** How a backend is named in the menu: xAI's media models are Grok Imagine. */
+export const backendName = (p: ProviderConfig) => (p.kind === "xai" ? "Grok Imagine (xAI)" : p.name);
 
 /** Why a provider cannot make this kind right now, or null when it can. */
 export function setupNeeded(p: ProviderConfig, kind: "image" | "video"): string | null {
@@ -46,13 +51,17 @@ export function BackendPicker({ kind }: { kind: "image" | "video" }) {
   const providers = useProviders();
   const settings = useApp((s) => s.settings);
   const active = useApp((s) => s.active);
-  useApp((s) => s.draft);
+  const draft = useApp((s) => s.draft);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const wrap = useRef<HTMLSpanElement>(null);
   const ref = currentModelRef(active);
   const def = kind === "image" ? settings.imageModel : settings.videoModel;
-  const auto = mediaModelFor(settings, kind);
+  // what new messages in a chat like this one get when nothing is picked for it
+  const chat = active ?? draft;
+  const auto = mediaChoice(settings, kind)?.ref;
+  const grokPick = mediaChoice(settings, kind, { model: chat.model, chatModel: chat.chatModel })?.reason === "grok";
+  const imagine = imagineFor(settings, kind);
 
   useEffect(() => {
     if (!open) return;
@@ -71,7 +80,7 @@ export function BackendPicker({ kind }: { kind: "image" | "video" }) {
         provider: p,
         pricing: pricingOf(p),
         setup: setupNeeded(p, kind),
-        models: p.models.filter((m) => fits(m, kind) && (!q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q) || p.name.toLowerCase().includes(q))),
+        models: p.models.filter((m) => fits(m, kind) && (!q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q) || backendName(p).toLowerCase().includes(q))),
       }))
       .filter((g) => g.models.length || (!q && g.setup))
       .sort((a, b) => ORDER.indexOf(a.pricing) - ORDER.indexOf(b.pricing));
@@ -86,7 +95,7 @@ export function BackendPicker({ kind }: { kind: "image" | "video" }) {
     <span className="pop-anchor" ref={wrap}>
       <button className="chip-btn backend-btn" onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open} title={`${kind === "image" ? "Image" : "Video"} backend`}>
         {current && pricingOf(current) === "free" && <span className="tag-free">Free</span>}
-        <span className="backend-name">{current ? `${current.name} · ${currentModel?.name ?? ref?.modelId}` : "Choose a backend"}</span>
+        <span className="backend-name">{current ? `${backendName(current)} · ${currentModel?.name ?? ref?.modelId}` : "Choose a backend"}</span>
         <Icon.chevron />
       </button>
       {open && (
@@ -96,7 +105,7 @@ export function BackendPicker({ kind }: { kind: "image" | "video" }) {
           {groups.map((g) => (
             <div key={g.provider.id} className="backend-group">
               <div className="menu-head row">
-                <span className="grow">{g.provider.name}</span>
+                <span className="grow">{backendName(g.provider)}</span>
                 <span className={`badge ${g.pricing === "free" ? "ok" : ""}`}>{PRICE_LABEL[g.pricing]}</span>
               </div>
               {g.setup ? (
@@ -113,6 +122,9 @@ export function BackendPicker({ kind }: { kind: "image" | "video" }) {
                       <button className="grow link-btn" title={m.id} onClick={() => (setOpen(false), void setChatModel(r))}>
                         {m.name}
                       </button>
+                      {grokPick && imagine && imagine.providerId === r.providerId && imagine.modelId === r.modelId && (
+                        <span className="badge" title="Chats with a Grok model use Grok Imagine unless you pick a backend for the chat">Grok chats</span>
+                      )}
                       {dflt ? (
                         <span className="badge ok" title={def ? "Used for new chats" : "Chosen automatically; click another model's Make default to change"}>Default</span>
                       ) : (
@@ -127,6 +139,15 @@ export function BackendPicker({ kind }: { kind: "image" | "video" }) {
             </div>
           ))}
           {!groups.length && <div className="hint" style={{ padding: 10 }}>Nothing matches.</div>}
+          {imagine && (
+            <label className="switch menu-item" style={{ padding: "6px 10px" }}>
+              <input type="checkbox" checked={settings.grokImagine !== false} onChange={(e) => void updateSettings({ grokImagine: e.target.checked })} />
+              <span>
+                Use Grok Imagine in Grok chats
+                <small>When the chat model is Grok and you have not picked a backend for the chat.</small>
+              </span>
+            </label>
+          )}
           {def && (
             <button className="menu-item" onClick={() => void setDefaultMedia(kind, undefined)}>
               <Icon.refresh /> Let the app choose the default

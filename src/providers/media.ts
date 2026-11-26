@@ -13,6 +13,7 @@ import { backendImages, backendVideo, providerReady, VIDEO_DEADLINE_MS } from ".
 import { trimSlash } from "./common";
 import { clampCount, dataUri, download, isImage, postJson as postJsonRaw, sleep, sniffImage, type MediaInput, type MediaOutput } from "./mediaUtil";
 import { ProviderError } from "./types";
+import { xaiMediaTokens } from "./xai";
 
 export { sniffImage, type MediaInput, type MediaOutput };
 
@@ -76,7 +77,7 @@ export async function generateImages(req: ImageRequest): Promise<MediaOutput[]> 
   } else if (provider.kind === "gemini") {
     out = /imagen/i.test(model.id) ? await imagen(req, inputs) : await geminiImage(req, inputs);
   } else if (provider.kind === "xai") {
-    out = await xaiImages(req, inputs);
+    out = await withXaiTokens(req, (r) => xaiImages(r, inputs));
   } else if (provider.kind === "openai") {
     out = await openaiImages(req, inputs);
   } else if (model.caps.imageOutput || model.kind === "chat") {
@@ -123,6 +124,26 @@ async function openaiImages(req: ImageRequest, inputs: MediaInput[]): Promise<Me
   if (o.quality && !dalle) body.quality = o.quality;
   if (dalle3 && o.quality === "high") body.quality = "hd";
   return readImageList(await postJson(`${base}/images/generations`, jsonHeaders(req.provider, req.apiKey), body, req.signal), req.signal);
+}
+
+/**
+ * Grok Imagine with the sign-in (billed to the subscription where xAI allows it)
+ * or the API key: try them in that order, moving on when one is refused.
+ */
+async function withXaiTokens<T>(req: Base, run: (r: Base) => Promise<T>): Promise<T> {
+  const tokens = await xaiMediaTokens(req.provider, req.apiKey);
+  if (!tokens.length) throw new ProviderError("Grok Imagine needs Sign in with X or an xAI API key (Settings → Providers & keys → xAI).");
+  let last: unknown;
+  for (const token of tokens) {
+    try {
+      return await run({ ...req, apiKey: token });
+    } catch (e) {
+      last = e;
+      const st = e instanceof ProviderError ? (e.status ?? 0) : 0;
+      if (st !== 401 && st !== 403 && st !== 402) throw e;
+    }
+  }
+  throw last;
 }
 
 async function xaiImages(req: ImageRequest, inputs: MediaInput[]): Promise<MediaOutput[]> {
@@ -239,7 +260,7 @@ export async function generateVideo(req: VideoRequest): Promise<MediaOutput> {
     case "gemini":
       return veo(req, inputs[0]);
     case "xai":
-      return xaiVideo(req, inputs[0]);
+      return withXaiTokens(req, (r) => xaiVideo(r, inputs[0]));
     default:
       return openaiVideo(req, inputs[0]);
   }

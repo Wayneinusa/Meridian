@@ -1,4 +1,4 @@
-import { defaultProviders } from "../providers/registry";
+import { defaultProviders, withImagineModels } from "../providers/registry";
 import type { Settings } from "../types";
 import { uid } from "../types";
 
@@ -48,7 +48,7 @@ export function migrateSettings(raw: unknown): Settings {
   return {
     ...d,
     ...s,
-    providers,
+    providers: withImagineModels(providers),
     params: s.params ?? {},
     modelParams: s.modelParams ?? {},
     tools: { ...d.tools, ...(s.tools ?? {}) },
