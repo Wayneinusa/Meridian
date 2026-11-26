@@ -158,7 +158,7 @@ export async function runConsortiumTurn(c: Conversation, signal: AbortSignal, ho
       askPermission: (_id, tool, input, _call, preview) => hooks.host.askPermission(c.id, tool, input, undefined, preview),
       ask: (_id, q, o, multi) => hooks.host.ask(c.id, `${m.name} asks: ${q}`, o, multi),
     };
-    await runTurn(subHost, sub, { signal: opts.signal, noTools: !opts.tools, maxSteps: opts.maxSteps, depth: 1, extraTools: opts.extraTools });
+    await runTurn(subHost, sub, { signal: opts.signal, noTools: !opts.tools, maxSteps: opts.maxSteps, depth: 1, extraTools: opts.extraTools, skills: m.skills });
     const answers = sub.messages.filter((x) => x.role === "assistant");
     const last = answers[answers.length - 1];
     const text = last?.parts.map((p) => (p.type === "text" ? p.text : "")).join("").trim() ?? "";

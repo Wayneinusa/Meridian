@@ -3,7 +3,8 @@
 // (asking the user where needed) and repeat until it is done.
 import { FULL_CONTEXT_CHARS, formatHits, indexFor, loadKnowledge } from "../knowledge";
 import { platform } from "../platform";
-import { pluginSkills, pluginTools, skillsPrompt } from "../plugins/runtime";
+import { pluginTools } from "../plugins/runtime";
+import { activeSkills, namedSkills, readSkillTool, skillsPrompt, type ActiveSkill } from "../skills/skills";
 import { resolveParams, supportedParams } from "../providers/params";
 import { adapterFor, findModel } from "../providers/registry";
 import { NativeSearchUnavailable, type BlobAccess } from "../providers/types";
@@ -54,6 +55,8 @@ export interface TurnOptions {
   model?: ModelRef;
   /** extra tools for this turn only (consortium: shared scratchpad, asking another member) */
   extraTools?: Tool[];
+  /** skills given to this turn's speaker (a consortium member), on top of the chat's */
+  skills?: string[];
   onAssistant?: (id: string) => void;
 }
 
@@ -134,7 +137,27 @@ function insideFolder(path: unknown, folder: string): boolean {
   return (p === f || p.startsWith(f + "/")) && !p.split("/").includes("..");
 }
 
-async function assembleTools(host: EngineHost, c: Conversation, settings: Settings, model: { caps: { tools: boolean } }, agent: Agent | undefined, knowledge: KnowledgeFile[], fullKnowledge: boolean, depth: number, hosted: boolean): Promise<Tool[]> {
+/**
+ * The skills of this turn: everywhere + the agent's + the project's + the
+ * consortium member's + plugin skills, and any installed skill the user named
+ * with /skill-name (naming one is opting in).
+ */
+export function chatSkills(host: EngineHost, c: Conversation, settings: Settings, agent: Agent | undefined, project: Project | undefined, member?: string[]): { list: ActiveSkill[]; named: string[] } {
+  const library = host.library.list("skills");
+  const plugins = host.library.list("plugins");
+  const list = activeSkills({ skills: library, plugins, agent, project, member, settings });
+  const lastUser = [...c.messages].reverse().find((m) => m.role === "user");
+  const text = lastUser?.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ") ?? "";
+  const named = text.includes("/") ? namedSkills(text, [...list, ...library.filter((s) => s.availability !== "off")]) : [];
+  for (const n of named) {
+    if (list.some((s) => s.name === n)) continue;
+    const s = library.find((x) => x.name === n)!;
+    list.push(...activeSkills({ skills: [{ ...s, availability: "everywhere" }], plugins: [], agent, settings }).map((x) => ({ ...x, from: "named in the message" })));
+  }
+  return { list, named };
+}
+
+async function assembleTools(host: EngineHost, c: Conversation, settings: Settings, model: { caps: { tools: boolean } }, agent: Agent | undefined, knowledge: KnowledgeFile[], fullKnowledge: boolean, depth: number, hosted: boolean, skills: ActiveSkill[] = []): Promise<Tool[]> {
   if (!model.caps.tools) return [];
   const switches = { ...settings.tools, ...(agent?.tools ?? {}) };
   if (c.mode === "research") switches.web = true;
@@ -157,6 +180,7 @@ async function assembleTools(host: EngineHost, c: Conversation, settings: Settin
   }
   if (switches.web && !hosted) tools.push(searchTool(host.getSecret));
   tools.push(...pluginTools(host.library.list("plugins"), host.getSecret));
+  if (skills.some((s) => !s.missing.length)) tools.push(readSkillTool(skills));
   tools.push(runJavascript);
   tools.push(
     ...assistantTools({
@@ -232,7 +256,8 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
         }
       }
       const hosted = !opts.noTools && hostedSearch(settings, c, agent, provider) && !nativeSearchDown(provider.id);
-      const tools = opts.noTools ? [] : [...(await assembleTools(host, c, settings, model, agent, knowledge, full, depth, hosted)), ...(model.caps.tools ? (opts.extraTools ?? []) : [])];
+      const skills = opts.noTools ? { list: [] as ActiveSkill[], named: [] as string[] } : chatSkills(host, c, settings, agent, project, opts.skills);
+      const tools = opts.noTools ? [] : [...(await assembleTools(host, c, settings, model, agent, knowledge, full, depth, hosted, skills.list)), ...(model.caps.tools ? (opts.extraTools ?? []) : [])];
       const memories = settings.memory && agent?.memory !== false ? host.library.list("memories").filter((m) => !m.projectId || m.projectId === c.projectId).slice(0, 200) : [];
       const system = buildSystemPrompt({
         settings,
@@ -244,7 +269,7 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
         knowledgeText,
         knowledgePassages,
         knowledgeFiles: knowledge.map((f) => f.name),
-        skillsText: opts.noTools ? "" : skillsPrompt(pluginSkills(host.library.list("plugins"))),
+        skillsText: opts.noTools || !model.caps.tools ? "" : skillsPrompt(skills.list, skills.named),
         subagent: depth > 0,
         model: ref,
       });

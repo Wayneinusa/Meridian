@@ -32,6 +32,8 @@ import { bankTools } from "../connectors/banks";
 import { mcpManager } from "../tools/mcp";
 import { mediaModelFor, noMediaModelMessage } from "../tools/media";
 import { modelOptions, parseProposal, plannerPrompt, type Proposal, type TeamRequest } from "../agent/teamPlanner";
+import type { SkillDraft } from "../skills/skills";
+import type { Skill } from "../types";
 import type { PermissionPreview, Tool } from "../tools/types";
 import { killComputerUse, rearmComputerUse } from "../tools/computer-use";
 import { closeSession, onBrowserView, type BrowserView } from "../browser/session";
@@ -109,6 +111,7 @@ export type View =
   | { name: "automations" }
   | { name: "usage" }
   | { name: "search" }
+  | { name: "skills" }
   /** the Consortium studio: build a team (manual, automatic or from a preset); edit: the open chat's team */
   | { name: "consortium"; edit?: boolean };
 
@@ -166,7 +169,7 @@ interface State {
   consortium: Record<string, Record<string, string>>;
 }
 
-const emptyLib = (): LibState => ({ agents: [], projects: [], prompts: [], memories: [], plugins: [], automations: [] });
+const emptyLib = (): LibState => ({ agents: [], projects: [], prompts: [], memories: [], plugins: [], automations: [], skills: [] });
 
 export const useApp = create<State>(() => ({
   ready: false,
@@ -619,6 +622,19 @@ export const setChatParams = (params: ModelParams | undefined) => patchChat({ pa
 export const setChatSystemPrompt = (text: string) => patchChat({ systemPrompt: text || undefined });
 /** Turn consortium mode on with this team, or off (undefined). */
 export const setConsortium = (cfg: ConsortiumConfig | undefined) => patchChat({ consortium: cfg, mode: cfg ? "consortium" : undefined }, { consortium: cfg, mode: cfg ? "consortium" : undefined });
+/** Install skills; a skill with the same name is updated and keeps where it is used. */
+export async function installSkills(drafts: SkillDraft[], source: Skill["source"], sourceUrl?: string): Promise<{ added: number; updated: number }> {
+  let added = 0;
+  let updated = 0;
+  for (const d of drafts) {
+    const prev = library.list("skills").find((s) => s.name.toLowerCase() === d.name.toLowerCase());
+    await saveItem("skills", { ...(prev ? { id: prev.id } : { availability: "assigned" as const }), ...d, source, sourceUrl });
+    if (prev) updated++;
+    else added++;
+  }
+  return { added, updated };
+}
+
 /** Automatic team: a strong model proposes members, roles and models for the task. */
 export async function proposeTeam(req: TeamRequest, planner: ModelRef | undefined, signal: AbortSignal): Promise<Proposal> {
   const settings = get().settings;

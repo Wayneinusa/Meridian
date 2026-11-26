@@ -61,6 +61,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 | Grok Imagine: always-listed backend (t2i, edit, t2v, i2v) with the sign-in or key (api.x.ai); used by Grok chats unless the chat has its own pick (`grokImagine` setting); any model can use it | `src/providers/xai.ts` (`IMAGINE_MODELS`, `xaiMediaTokens`), `src/tools/media.ts` (`mediaChoice`), `src/ui/BackendPicker.tsx` |
 | Images and video: Pollinations, AI Horde, Cloudflare, fal.ai, Runway, custom templates, plugin engines. A backend picker with separate image and video defaults. | `src/providers/backends.ts`, `media.ts`, `mediaUtil.ts`, `src/ui/BackendPicker.tsx` |
 | **Customize**: global style / about me / instructions (`settings.customization`, `systemPrompt`) and per-model overrides (`settings.modelCustom`, field-level fallback to Global; instructions replace or add) | `src/agent/customize.ts`, `src/ui/CustomizeTab.tsx`, `prompt.ts` (`model` in `PromptParts`) |
+| **Skills** (library collection `skills`, synced like the rest): SKILL.md parse/write, install from file / folder / zip / GitHub, create and edit, availability everywhere / assigned / off, assigned per agent, project and consortium member, required tools and connectors, progressive disclosure (`read_skill`), `/skill-name` loads one in full, Skills chip in the composer; plugin skills merged in | `src/skills/skills.ts`, `src/ui/pages/Skills.tsx` (`SkillPicker`), `engine.ts` (`chatSkills`) |
 | Agents, projects (knowledge with BM25), prompts and slash commands, memory, plan checklist, questions, sub-agents (`delegate`), research mode | `src/agent/`, `src/tools/assistant.ts`, `src/knowledge/` |
 | Plugins: Claude format, TypingMind single- and multi-function, Meridian JSON; sandboxed JS with standard `fetch`; plugin image/video engines | `src/plugins/`, `src/tools/sandbox.ts` |
 | Connectors: Claude directory (MCP, OAuth 2.1), registry search, Google and Microsoft built in, banks | `src/connectors/` |
@@ -78,7 +79,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 2. **Long-running sessions.** Goal, budget and state machine persisted after every step; mid-run steering (continue / pivot / stop / change goal); survive restarts (tray); wake on schedule or event.
 3. **Specialised sub-agents.** Library agents with `role: subagent` called by name from `delegate`, in parallel or in sequence, with context hand-off; child rows in the plan checklist; plugins can ship them.
 4. **Rich artifacts.** In-app preview and light editing for xlsx (grid with live formulas), pptx (slides and notes), docx and Markdown; Open in app and Download.
-5. **Auto-invoked skills.** Match skill descriptions to the request (BM25 plus project instructions); suggest or pre-load them with confirmation; manual `/` stays.
+5. **Auto-invoked skills.** The Skills system exists (0.2.21+). Still to do: match skill descriptions to the request (BM25 plus project instructions) and suggest or pre-load them with confirmation; `/skill-name` already works.
 6. **X tools, both options.** Official X API tools with the owner's developer app (search, read threads, trends, post with approval), and research mode that "prefers real-time sources" (on by default with Grok).
 7. **Remote worker, both options.** A self-hosted Docker worker using the same engine, plus Dispatch from iPhone to a computer, with status synced through the existing sync layer. The **hosted** option needs a server and accounts: **ask the owner where it should run** before building it.
 
@@ -90,11 +91,11 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 
 ```bash
 npm install
-npm run typecheck && npx vitest run      # 162 unit tests (20 files)
+npm run typecheck && npx vitest run      # 171 unit tests (21 files)
 (cd src-tauri && cargo test --lib)       # Rust tests (sign-in listener, keychain splitting)
 npm run build                            # web bundle for the e2e suites
 node e2e/run.cjs                          # 62 checks, core app        (port 4173)
-node e2e/features.cjs                     # 42 checks, library, customize (port 4175)
+node e2e/features.cjs                     # 51 checks, library, customize, skills (port 4175)
 node e2e/media-sync.cjs                   # 23 checks, free media, sync (port 4176)
 node e2e/grok-banks.cjs                   # 37 checks, Grok, banks, UI  (port 4177)
 node e2e/consortium.cjs                   # 34 checks, consortium studio, crew (port 4178)
@@ -125,6 +126,7 @@ npx tauri build --debug --no-bundle && xvfb-run -a node e2e/native.cjs   # real 
 - **Media choice order** (`mediaChoice`): the chat's own pick → Grok Imagine for Grok chats → saved default → automatic. Switching to Image/Video calls `setChatModel(ref, true)`, which neither saves a default nor records a per-chat pick; only an explicit pick does.
 - **Native search fallback:** the xAI adapter throws `NativeSearchUnavailable` only for request-shaped refusals (400/404/422/501, or tool errors in the stream), never for credits, sign-in or version problems. The engine removes the half-made answer, marks the provider in `nativeSearch.ts` and redoes the step.
 - **Consortium e2e timing:** wait for "working" in the Team panel (`[data-testid=team-panel]`) before adding an instruction; the old status chips are hidden while the panel is open. Member names live in inputs, so read them with `evaluateAll(e => e.value)`, not `textContent`.
+- **Skills and plugins:** `read_skill` is built by the engine from `activeSkills` (library + plugin skills); `pluginTools` no longer adds it. New and installed skills default to *assigned* (opt-in); `/name` is the explicit opt-in anywhere.
 - Under full parallel load the xlsx test in `tests/tools.test.ts` can pass its 5 s timeout; rerun it alone before chasing it.
 
 ## Where things are

@@ -160,3 +160,12 @@ Tested with unit tests and mocked e2e; not yet against xAI's real service.
 - **A new execution-crew mode:** jobs run at the same time, an auditor checks, there is one fix pass, then a report, with no voting.
 - **A Team panel** beside the chat with live status, the shared scratchpad and the controls.
 - The existing discussion-and-vote flow is unchanged.
+
+**Part 4 delivered:** Skills as a first-class library item, in the SKILL.md format.
+
+- **Getting skills:** install from a SKILL.md, a folder, a zip or a GitHub link; create, edit and export them.
+- **Where they are used:** everywhere, only where assigned (agents, projects, consortium members), or off. Skills can declare the tools and connectors they need and are held back when those are missing.
+- **In a chat:** progressive disclosure (`read_skill`), `/skill-name` loads a skill in full, and a Skills chip shows what a chat has.
+- **Compatibility:** plugin skills keep working.
+
+Still to do from the roadmap: auto-suggesting skills from the request.

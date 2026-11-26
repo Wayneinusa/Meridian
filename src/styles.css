@@ -527,3 +527,13 @@ textarea.mono { font: 12.5px/1.45 ui-monospace, Menlo, Consolas, monospace; }
 .team-member .model-line { font-size: 12px; }
 .scratchpad { display: grid; gap: 8px; }
 .pad-entry { border-left: 3px solid var(--accent-soft); padding-left: 8px; font-size: 13.5px; }
+
+/* skills */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.warn-text { color: var(--warn); }
+.skill-tile { min-height: 0; }
+.skill-tile select { width: auto; }
+.skill-file { border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; margin-top: 6px; }
+.skill-file textarea { margin-top: 6px; }
+.skills-install input { min-width: 220px; }
+.skills-chip-pop { right: 0; left: auto; bottom: 40px; top: auto; width: min(360px, 90vw); }

@@ -5,6 +5,7 @@ import type { Agent, Settings } from "../../types";
 import { formatBytes } from "../../util/bytes";
 import { Icon } from "../icons";
 import { Modal, ModelSelect } from "../Modal";
+import { SkillPicker } from "./Skills";
 
 const TOOL_LABELS: [keyof Settings["tools"], string][] = [
   ["files", "Create files"],
@@ -129,6 +130,7 @@ export function AgentEditor({ agent, onClose }: { agent: Partial<Agent>; onClose
         <span className="hint">Knowledge files</span>
         <KnowledgeEditor files={a.knowledge ?? []} onChange={(knowledge) => up({ knowledge })} />
       </div>
+      <SkillPicker value={a.skills} onChange={(skills) => up({ skills })} label="Skills this agent can use (on top of those available everywhere)" />
       <label className="field">
         <span>Conversation starters (one per line)</span>
         <textarea rows={3} value={(a.starters ?? []).join("\n")} onChange={(e) => up({ starters: e.target.value.split("\n") })} />

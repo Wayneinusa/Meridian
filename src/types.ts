@@ -211,6 +211,8 @@ export interface ConsortiumMember {
   model?: ModelRef;
   /** a saved agent (its instructions, tools and knowledge come along) */
   agentId?: string;
+  /** skills given to this member (ids) */
+  skills?: string[];
 }
 
 export interface ConsortiumConfig {
@@ -539,6 +541,8 @@ export interface Agent extends LibItem {
   /** text-to-speech voice for this agent */
   voice?: string;
   pluginId?: string;
+  /** skills given to this agent (ids), on top of those available everywhere */
+  skills?: string[];
 }
 
 export interface Project extends LibItem {
@@ -550,6 +554,8 @@ export interface Project extends LibItem {
   model?: ModelRef;
   /** desktop: default work folder for chats in this project */
   workFolder?: string;
+  /** skills given to chats in this project (ids) */
+  skills?: string[];
 }
 
 export interface PromptItem extends LibItem {
@@ -602,6 +608,37 @@ export interface PluginEngine {
   http?: MediaHttpSpec;
   /** or JavaScript: body of an async function (args, settings, fetchJson) returning a URL, data URI or { url | images | video } */
   code?: string;
+}
+
+/**
+ * A skill: reusable instructions (and optional files) an agent loads when a task
+ * calls for it. Same format as Claude's skills: a folder with SKILL.md (YAML
+ * front matter with name and description, then Markdown) and any other files.
+ * Only the name and description are given to the model up front; the rest is
+ * read when the skill is used.
+ */
+export interface Skill extends LibItem {
+  name: string;
+  description: string;
+  /** SKILL.md after the front matter */
+  body: string;
+  /** other files in the skill's folder: relative path -> text */
+  files?: Record<string, string>;
+  /**
+   * everywhere: every chat; assigned: only agents, projects and consortium
+   * members it is given to; off: installed but not used
+   */
+  availability: "everywhere" | "assigned" | "off";
+  /** tools / tool groups it needs (web, files, browser, computer, media or a tool name) */
+  requiresTools?: string[];
+  /** connectors it needs (names or ids, e.g. "notion") */
+  requiresConnectors?: string[];
+  /** Claude's allowed-tools, kept for reference */
+  allowedTools?: string[];
+  license?: string;
+  version?: string;
+  source: "created" | "file" | "folder" | "zip" | "github" | "url";
+  sourceUrl?: string;
 }
 
 export interface PluginSkill {
@@ -696,7 +733,7 @@ export interface Automation extends LibItem {
   runs: AutomationRun[];
 }
 
-export type CollectionName = "agents" | "projects" | "prompts" | "memories" | "plugins" | "automations";
+export type CollectionName = "agents" | "projects" | "prompts" | "memories" | "plugins" | "automations" | "skills";
 
 export interface CollectionTypes {
   agents: Agent;
@@ -705,6 +742,7 @@ export interface CollectionTypes {
   memories: MemoryItem;
   plugins: Plugin;
   automations: Automation;
+  skills: Skill;
 }
 
-export const COLLECTIONS: CollectionName[] = ["agents", "projects", "prompts", "memories", "plugins", "automations"];
+export const COLLECTIONS: CollectionName[] = ["agents", "projects", "prompts", "memories", "plugins", "automations", "skills"];

@@ -3,6 +3,7 @@ import { platform } from "../platform";
 import { expandCommand, pluginCommands } from "../plugins/runtime";
 import { findModel } from "../providers/registry";
 import { clearNativeSearchDown, onNativeSearchChange, searchStatus } from "../agent/nativeSearch";
+import { activeSkills, slug } from "../skills/skills";
 import { attachFile, currentModelRef, getKey, send, setChatMedia, setChatMode, stop, toast, updateSettings, useApp } from "../state/store";
 import type { MediaOptions, ModelRef, Part, Settings } from "../types";
 import { record, speak, stopSpeaking, transcribe, type Recording } from "../voice";
@@ -40,6 +41,8 @@ interface SlashItem {
   description: string;
   body: string;
   source: string;
+  /** a skill: the /name is kept so the engine loads it */
+  skill?: boolean;
 }
 
 function CompareMenu({ selected, onChange, onClose }: { selected: ModelRef[]; onChange: (r: ModelRef[]) => void; onClose: () => void }) {
@@ -77,6 +80,7 @@ export function Composer() {
   const settings = useApp((s) => s.settings);
   const prompts = useApp((s) => s.lib.prompts);
   const plugins = useApp((s) => s.lib.plugins);
+  const skillLib = useApp((s) => s.lib.skills);
   const busyNote = useApp((s) => (s.activeId ? s.busy[s.activeId] : undefined));
   const busy = busyNote !== undefined;
   const [text, setText] = useState("");
@@ -135,13 +139,16 @@ export function Composer() {
     for (const p of prompts) if (p.command) items.push({ key: `p:${p.id}`, name: p.command, description: p.title, body: p.content, source: "Prompt" });
     for (const c of pluginCommands(plugins)) items.push({ key: `c:${c.plugin}:${c.name}`, name: c.name, description: c.description ?? "", body: c.body, source: c.plugin });
     for (const p of prompts) if (!p.command) items.push({ key: `t:${p.id}`, name: p.title.toLowerCase().replace(/\s+/g, "-"), description: p.title, body: p.content, source: "Prompt" });
+    // skills: /name stays in the message and the engine loads that skill in full
+    for (const sk of skillLib) if (sk.availability !== "off") items.push({ key: `s:${sk.id}`, name: slug(sk.name), description: sk.description, body: "", source: "Skill", skill: true });
     return items;
-  }, [prompts, plugins]);
-  const slash = /^\/([\w:-]*)$/.exec(text);
+  }, [prompts, plugins, skillLib]);
+  const slash = /^\/([\w:.-]*)$/.exec(text);
   const slashMatches = slash ? slashItems.filter((i) => i.name.toLowerCase().includes(slash[1].toLowerCase())).slice(0, 12) : [];
   useEffect(() => setSlashIndex(0), [slash?.[1]]);
 
   const useSlash = (item: SlashItem) => {
+    if (item.skill) return setText(`/${item.name} `);
     if (variablesOf(item.body).length) {
       setText("");
       setFilling(item.body);
@@ -153,7 +160,7 @@ export function Composer() {
     const m = /^\/([\w:-]+)(?:\s+([\s\S]*))?$/.exec(t);
     if (!m) return t;
     const item = slashItems.find((i) => i.name === m[1]);
-    return item ? expandCommand(item.body, m[2] ?? "") : t;
+    return item && !item.skill ? expandCommand(item.body, m[2] ?? "") : t;
   };
 
   const addFiles = async (files: Iterable<File>) => {
@@ -423,6 +430,7 @@ export function Composer() {
             </span>
           )}
           {mode === "chat" && found && <SearchChip />}
+          {mode === "chat" && found && <SkillsChip />}
           <div className="seg mode-seg" role="radiogroup" aria-label="What to create">
             {(["chat", "image", "video"] as const).map((m) => (
               <button key={m} role="radio" aria-checked={mode === m} className={mode === m ? "sel" : ""} disabled={busy} onClick={() => void setChatMode(m)}>
@@ -541,6 +549,51 @@ function SearchChip() {
         <button className="link-btn" style={{ fontSize: 12 }} onClick={() => clearNativeSearchDown(found.provider.id)} title="Try the provider's own search again">
           retry
         </button>
+      )}
+    </span>
+  );
+}
+
+/** Which skills this chat can use (and why), so the user always knows. */
+function SkillsChip() {
+  const settings = useApp((s) => s.settings);
+  const active = useApp((s) => s.active);
+  const draft = useApp((s) => s.draft);
+  const lib = useApp((s) => s.lib);
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: PointerEvent) => !wrap.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [open]);
+  const projectId = active ? active.projectId : draft.projectId;
+  const project = lib.projects.find((p) => p.id === projectId);
+  const agentId = (active ? active.agentId : draft.agentId) ?? project?.agentId;
+  const agent = lib.agents.find((a) => a.id === agentId);
+  const list = activeSkills({ skills: lib.skills, plugins: lib.plugins, agent, project, settings });
+  if (!list.length) return null;
+  const usable = list.filter((s) => !s.missing.length);
+  return (
+    <span className="pop-anchor" ref={wrap}>
+      <button className="search-chip" data-testid="skills-chip" onClick={() => setOpen(!open)} aria-expanded={open} title="Skills this chat can use">
+        <Icon.skill /> Skills · {usable.length}
+      </button>
+      {open && (
+        <div className="popover skills-chip-pop" role="dialog" aria-label="Skills in this chat">
+          <div className="menu-head">Skills in this chat</div>
+          <p className="hint" style={{ margin: "0 10px 6px" }}>The model sees their names and descriptions and loads one when a task fits. Type /name to use one on purpose.</p>
+          {list.map((s) => (
+            <div key={s.id ?? s.name} className="menu-item" style={{ display: "block", opacity: s.missing.length ? 0.6 : 1 }}>
+              <b>{s.name}</b> <span className="muted">· {s.from}</span>
+              {s.missing.length > 0 && <div className="hint warn-text">Not offered: {s.missing.join("; ")}</div>}
+            </div>
+          ))}
+          <button className="menu-item" onClick={() => (setOpen(false), useApp.setState({ view: { name: "skills" } }))}>
+            <Icon.gear /> Manage skills
+          </button>
+        </div>
       )}
     </span>
   );

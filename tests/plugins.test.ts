@@ -2,6 +2,7 @@ import { zipSync } from "fflate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GALLERY } from "../src/plugins/gallery";
 import { fromJson, frontMatter, pluginsFromFile, pluginsFromZip } from "../src/plugins/import";
+import { activeSkills, readSkillTool } from "../src/skills/skills";
 import { expandCommand, fillTemplate, pluginTools, runHttpTool, skillsPrompt, pluginSkills } from "../src/plugins/runtime";
 import type { Plugin } from "../src/types";
 
@@ -88,12 +89,14 @@ describe("plugin runtime", () => {
   it("exposes tools, skills and a read_skill tool; refuses without required settings", async () => {
     const p = { id: "p1", name: "Demo", enabled: true, tools: [{ name: "Get Thing!", description: "d", inputSchema: { type: "object", properties: {} }, kind: "http", http: { method: "GET", url: "https://x" } }], skills: [{ name: "s1", description: "when X", body: "do Y", files: { "a.md": "A" } }], commands: [], agents: [], mcpServers: [], settings: [{ key: "k", label: "Key", required: true }], values: {} } as unknown as Plugin;
     const tools = pluginTools([p], async () => null);
-    expect(tools.map((t) => t.spec.name)).toEqual(["get_thing", "read_skill"]);
+    // read_skill now comes from the engine's skill set (library and plugin skills together)
+    expect(tools.map((t) => t.spec.name)).toEqual(["get_thing"]);
     const r = await tools[0].run({}, {} as never);
     expect(r).toMatchObject({ isError: true });
     expect(r.text).toMatch(/needs settings first \(Key\)/);
-    expect((await tools[1].run({ name: "s1" }, {} as never)).text).toContain("do Y");
-    expect((await tools[1].run({ name: "s1", file: "a.md" }, {} as never)).text).toBe("A");
+    const read = readSkillTool(activeSkills({ skills: [], plugins: [p], settings: { tools: { files: true, media: true, web: true, computer: false, browser: true, connectors: true }, mcpServers: [] } }));
+    expect((await read.run({ name: "s1" }, {} as never)).text).toContain("do Y");
+    expect((await read.run({ name: "s1", file: "a.md" }, {} as never)).text).toBe("A");
     expect(skillsPrompt(pluginSkills([p]))).toContain("- s1: when X");
   });
 

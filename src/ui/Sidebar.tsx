@@ -158,6 +158,7 @@ export function Sidebar() {
           {nav("consortium", "Consortium", <Icon.team />)}
           {nav("projects", "Projects", <Icon.folder />)}
           {nav("prompts", "Prompts", <Icon.prompt />)}
+          {nav("skills", "Skills", <Icon.skill />)}
           {nav("automations", "Automations", <Icon.clock />, automations.filter((a) => a.enabled).length)}
         </nav>
       </div>

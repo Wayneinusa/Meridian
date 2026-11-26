@@ -6,6 +6,7 @@ import type { Project } from "../../types";
 import { Icon } from "../icons";
 import { ModelSelect } from "../Modal";
 import { KnowledgeEditor } from "./Agents";
+import { SkillPicker } from "./Skills";
 
 export function ProjectsPage() {
   const projects = useApp((s) => s.lib.projects);
@@ -63,6 +64,7 @@ export function ProjectPage({ id }: { id: string }) {
           <span>Project instructions</span>
           <textarea rows={4} defaultValue={project.instructions} placeholder="Background, goals, tone, rules every chat in this project should follow" onBlur={(e) => e.target.value !== project.instructions && save({ instructions: e.target.value })} />
         </label>
+        <SkillPicker value={project.skills} onChange={(skills) => save({ skills })} label="Skills for chats in this project" />
         <div className="row wrap">
           <label className="field grow">
             <span>Default agent</span>

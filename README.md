@@ -10,6 +10,7 @@ A multi-provider AI workspace for **iPhone, iPad and Windows** from one codebase
 | **Images & video** | Chat / Image / Video switch in the composer, with a **backend button** next to it: pick the service and model for this chat, and **Make default** for images and for video separately. **Free**: Pollinations (no sign-up for images; a free key adds 50+ models and video), AI Horde (free community GPUs), Cloudflare Workers AI (free daily allowance). **With your key or Sign in with X**: Grok Imagine (used automatically in Grok chats). **With your key**: OpenAI (gpt-image, DALL·E, Sora), Google (Imagen, Gemini image models, Veo), OpenRouter, fal.ai (Flux, Kling, Wan, MiniMax…), Runway (Gen-4). **Custom**: any server, OpenAI-, xAI- or fal-style, or described by a request template. Plugins can add their own image or video engines. Aspect ratio, count, quality, length, resolution; **Edit** and **Animate** on any picture; chat models can also create pictures as a tool. |
 | **Consortium** | A full-page studio: build a team by hand (2–6 agents, each with a name, a free-text role and its own model and provider) or have a strong model propose one for your task; then they either discuss and vote on a joint answer, or work at the same time as an execution crew with an auditor. Several agents (any mix of models: Claude, Grok, GPT, Gemini, local) take one task together: they plan who does what, work in parallel with a shared scratchpad and questions to each other, review each other, and vote on a joint answer. The result is a consensus, a majority with the dissent shown, or the separate positions when they don't agree. The whole discussion is visible, and you can add instructions, stop an agent or force the vote. |
 | **Customize** | Like Grok's *Customize Grok*, for every model: a response style (Concise, Explanatory, Formal, Friendly, Socratic or your own words), what models should know about you, and standing instructions. Set them once under **Settings → Customize → Global**; give any model its own style, "about you" or instructions (replacing or added to the global ones) under **Per model**. Whatever a model does not set comes from Global, and **Use Global** removes its own settings. The model-parameters panel in a chat shows whether the current model uses Global or its own. |
+| **Skills** | Reusable instructions (plus files) in the **SKILL.md** format Claude uses. Create and edit them in Meridian, or install a SKILL.md, a folder, a zip or a GitHub link (a repository with several skills installs all of them). Each skill is used **everywhere**, **only where assigned** (agents, projects, consortium members), or **off**. Only names and descriptions go to the model until it loads one; type `/skill-name` to use one on purpose. A **Skills · N** chip in the composer shows which skills a chat has and why. Skills can declare tools and connectors they need. |
 | **Agents** | Assistants with their own instructions, model, tools, knowledge files, memory and conversation starters; eight templates. |
 | **Projects** | Chats grouped with shared instructions, knowledge files (given in full when small, searched with BM25 when large), a default agent and model, and on desktop a work folder the assistant may use. |
 | **Prompts** | A prompt library with `{{variables}}`; type `/` in the composer for prompts and plugin commands (`$ARGUMENTS` like Claude). |
@@ -64,6 +65,30 @@ npm run tauri dev
 ```
 
 Then open Settings → Providers & keys, paste a key, and the model list is fetched.
+
+## Skills
+
+Open **Skills** in the sidebar.
+
+- **Install:**
+  - **SKILL.md or .zip:** one skill, or a zip with any number of skill folders.
+  - **A folder:** every SKILL.md in it, with the text files beside each.
+  - **A link:** a GitHub repository, a folder in one (`…/tree/main/skills/pdf`), a SKILL.md on GitHub, or a zip address.
+  - Installing a skill with the same name again updates it and keeps where it is used.
+- **Create and edit:** a name, a description saying what it does and **when to use it** (the only part the model sees until it loads the skill), Markdown instructions, any number of files (templates, examples, reference), and the tools and connectors it needs.
+- **Where it is used:**
+  - *Everywhere*: every chat.
+  - *Only where assigned* (the default for new skills): the agents (Agents → Edit), projects (the project page) and consortium members (the studio) you give it to.
+  - *Off*.
+- **Missing requirements:** a skill whose tools are switched off or whose connector is not added is listed with the reason and is not offered until that is fixed.
+- **Export:** a zip with SKILL.md and its files, or copy SKILL.md.
+- **Plugin skills** (from Claude plugins) keep working and are listed under *From plugins*.
+
+In a chat:
+
+- The model gets each skill's name and description, and loads the instructions with `read_skill` when a task fits; the call shows in the chat.
+- Type `/` to pick a skill, or write `/skill-name` anywhere in a message. That skill is loaded in full for the message, even one that is only used where assigned.
+- The **Skills · N** chip next to the search chip lists the chat's skills and where each comes from (everywhere, agent, project, member, plugin).
 
 ## Grok: native search and Sign in with X
 

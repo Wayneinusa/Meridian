@@ -7,6 +7,7 @@ import { Icon } from "./icons";
 import { Markdown } from "./Markdown";
 import { FileView } from "./MessageView";
 import { ModelSelect } from "./Modal";
+import { SkillPicker } from "./pages/Skills";
 
 type Seed = Omit<ConsortiumMember, "id"> & { coordinator?: boolean };
 
@@ -117,6 +118,7 @@ export function ConsortiumChip() {
 /** Edit a team: members in order, each with a name, role, model and optional saved agent. */
 export function TeamBuilder({ cfg, onChange }: { cfg: ConsortiumConfig; onChange: (c: ConsortiumConfig) => void }) {
   const agents = useApp((s) => s.lib.agents);
+  const skills = useApp((s) => s.lib.skills);
   const patch = (id: string, p: Partial<ConsortiumMember>) => onChange({ ...cfg, members: cfg.members.map((m) => (m.id === id ? { ...m, ...p } : m)) });
   const move = (i: number, d: number) => {
     const list = cfg.members.slice();
@@ -189,6 +191,7 @@ export function TeamBuilder({ cfg, onChange }: { cfg: ConsortiumConfig; onChange
                 </label>
               )}
             </div>
+            {skills.length > 0 && <SkillPicker value={m.skills} onChange={(ids) => patch(m.id, { skills: ids })} label="Skills (optional)" />}
             <label className="hint coord-pick">
               <input type="radio" name="coordinator" checked={cfg.coordinatorId === m.id} onChange={() => onChange({ ...cfg, coordinatorId: m.id })} /> Coordinator
             </label>
@@ -206,6 +209,7 @@ export function TeamPanel() {
   const settings = useApp((s) => s.settings);
   const busy = useApp((s) => (s.activeId ? s.busy[s.activeId] !== undefined : false));
   const statuses = useApp((s) => (s.activeId ? s.consortium[s.activeId] : undefined));
+  const allSkills = useApp((s) => s.lib.skills);
   const cfg = active ? active.consortium : draft.consortium;
   if (!cfg) return null;
   const crew = cfg.style === "execute";
@@ -240,6 +244,7 @@ export function TeamPanel() {
                 </div>
                 <div className="hint">{m.role || "(no role)"}</div>
                 <div className="hint model-line">{modelName(settings, m.model)}</div>
+                {m.skills?.length ? <div className="hint">Skills: {m.skills.map((id) => allSkills.find((x) => x.id === id)?.name).filter(Boolean).join(", ")}</div> : null}
               </li>
             );
           })}

@@ -85,8 +85,7 @@ export function pluginTools(plugins: Plugin[], getSecret: (name: string) => Prom
       });
     }
   }
-  const skills = pluginSkills(plugins);
-  if (skills.length) out.push(readSkillTool(skills));
+  // plugin skills are read through the engine's read_skill, together with the library's skills
   return out;
 }
 
@@ -107,30 +106,6 @@ export function skillsPrompt(skills: (PluginSkill & { plugin: string })[]): stri
     ...skills.map((s) => `- ${s.name}: ${s.description.replace(/\s+/g, " ").slice(0, 300)}`),
     "</available_skills>",
   ].join("\n");
-}
-
-function readSkillTool(skills: (PluginSkill & { plugin: string })[]): Tool {
-  return {
-    group: "files",
-    title: "Read skill",
-    spec: {
-      name: "read_skill",
-      description: "Load the full instructions of one of your skills (see available_skills), or one of the files that ship with it.",
-      inputSchema: { type: "object", properties: { name: { type: "string" }, file: { type: "string", description: "optional: a file bundled with the skill" } }, required: ["name"] },
-    },
-    needsApproval: () => false,
-    summarize: (i) => `Read skill ${String(i.name)}${i.file ? ` / ${String(i.file)}` : ""}`,
-    async run(input) {
-      const s = skills.find((x) => x.name === input.name) ?? skills.find((x) => x.name.toLowerCase() === String(input.name).toLowerCase());
-      if (!s) return { isError: true, text: `No skill named ${String(input.name)}. Available: ${skills.map((x) => x.name).join(", ")}` };
-      if (input.file) {
-        const f = s.files?.[String(input.file)];
-        return f == null ? { isError: true, text: `No file ${String(input.file)}. Files: ${Object.keys(s.files ?? {}).join(", ") || "none"}` } : { text: f };
-      }
-      const files = Object.keys(s.files ?? {});
-      return { text: `${s.body}${files.length ? `\n\n[Files in this skill: ${files.join(", ")}. Read one with read_skill(name, file).]` : ""}` };
-    },
-  };
 }
 
 /** Expand a slash command: $ARGUMENTS / $1 $2 (Claude style) and {{text}}. */
