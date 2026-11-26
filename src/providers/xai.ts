@@ -34,7 +34,52 @@ export const XAI_GATEWAY = "https://cli-chat-proxy.grok.com/v1";
 /** keychain entry for the sign-in (oauth.<id>) */
 export const XAI_TOKEN_ID = "provider.xai";
 const CLIENT_NAME = "meridian";
-const CLIENT_VERSION = "1";
+/**
+ * xAI's gateway refuses clients older than a minimum version (426 "Your Grok CLI
+ * version (…) is outdated. Please update to version 1.0.13 or later"). Meridian
+ * sends a version that meets it, and when xAI raises the minimum it adopts the
+ * number from the refusal, remembers it and retries once.
+ */
+const MIN_CLIENT_VERSION = "1.0.13";
+const VERSION_KEY = "meridian.xai.clientVersion";
+let clientVersion = (() => {
+  try {
+    const saved = globalThis.localStorage?.getItem(VERSION_KEY);
+    return saved && newerVersion(saved, MIN_CLIENT_VERSION) ? saved : MIN_CLIENT_VERSION;
+  } catch {
+    return MIN_CLIENT_VERSION;
+  }
+})();
+
+function newerVersion(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0;
+  }
+  return false;
+}
+
+/** If xAI refused the client version and named the minimum, adopt it. True when a retry makes sense. */
+export function adoptRequiredVersion(text: string): boolean {
+  const m = /version\D{0,40}?(\d+\.\d+\.\d+)\s+or\s+later/i.exec(text) ?? /update to (?:version )?v?(\d+\.\d+\.\d+)/i.exec(text);
+  if (!m || !newerVersion(m[1], clientVersion)) return false;
+  clientVersion = m[1];
+  try {
+    globalThis.localStorage?.setItem(VERSION_KEY, clientVersion);
+  } catch {
+    /* remembered for this run only */
+  }
+  return true;
+}
+
+/** Retry a gateway request once when xAI asks for a newer client version. */
+async function versionGate(res: Response, again: () => Promise<Response>): Promise<Response> {
+  if (res.status !== 426 && res.status !== 400 && res.status !== 403) return res;
+  const text = await res.clone().text().catch(() => "");
+  return adoptRequiredVersion(text) ? again() : res;
+}
 
 type Json = Record<string, any>;
 
@@ -97,7 +142,7 @@ function gatewayHeaders(auth: XaiAuth, model: string, conv: string, stream: bool
     "X-XAI-Token-Auth": "xai-grok-cli",
     "x-authenticateresponse": "authenticate-response",
     "x-grok-client-identifier": CLIENT_NAME,
-    "x-grok-client-version": CLIENT_VERSION,
+    "x-grok-client-version": clientVersion,
     "x-grok-client-mode": "interactive",
     "x-grok-conv-id": conv,
     "x-grok-session-id": conv,
@@ -125,7 +170,8 @@ async function listModels(provider: ProviderConfig, apiKey: string): Promise<Mod
   const out = new Map<string, ModelInfo>();
   const auth = await xaiAuth(provider, apiKey);
   if (auth?.mode === "oauth") {
-    const res = await httpFetch(`${XAI_GATEWAY}/models-v2`, { headers: gatewayHeaders(auth, "", uid("c"), false) });
+    const get = () => httpFetch(`${XAI_GATEWAY}/models-v2`, { headers: gatewayHeaders(auth, "", uid("c"), false) });
+    const res = await versionGate(await get(), get);
     if (!res.ok) throw new ProviderError(xaiError(res.status, await readError(res)), res.status);
     for (const m of ((await res.json()).data ?? []) as Json[]) {
       const info = gatewayModel(m);
@@ -146,6 +192,7 @@ async function listModels(provider: ProviderConfig, apiKey: string): Promise<Mod
 
 function xaiError(status: number, text: string): string {
   if (status === 403 && /spending-limit|subscription|credits/i.test(text)) return "xAI refused the request: the account has run out of credits or needs a SuperGrok / X Premium subscription. Check grok.com, or use an API key.";
+  if (status === 426 || /outdated|update to version/i.test(text)) return `xAI's subscription gateway asked for a newer client version and Meridian could not adapt automatically (${text}). Use an API key for now, and report this so Meridian can be updated.`;
   if (status === 401) return "xAI did not accept the sign-in. Sign in with X again in Settings → Providers & keys.";
   return text;
 }
@@ -251,6 +298,7 @@ async function responsesChat(req: ChatRequest, auth: XaiAuth, native: boolean): 
       signal: req.signal,
     });
   let res = await post(auth);
+  if (auth.mode === "oauth") res = await versionGate(res, () => post(auth));
   // xAI answers an expired sign-in with 401 or 403: refresh once and retry
   if ((res.status === 401 || res.status === 403) && auth.mode === "oauth") {
     const text = await res.clone().text();

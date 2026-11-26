@@ -121,3 +121,11 @@ It had been planned but not yet built.
 - Long secrets are split across several Credential Manager entries and joined again when read.
 - A failed sign-in now leaves its reason on the Grok card.
 - Verified with Rust tests using a store that enforces Windows' limit; the Windows build compiles in CI.
+
+## 11. "Signed in, but chatting says 426: Your Grok CLI version (1) is outdated"
+
+Sign in with X now works on Windows (0.2.18).
+
+**Cause:** xAI's subscription gateway refuses clients that report a version older than 1.0.13, and Meridian reported "1".
+
+**Fix:** Meridian reports a version the gateway accepts. If xAI raises the minimum again, Meridian reads the new number from the refusal, remembers it and retries once, so it should not break the same way again. Tested against a mock that raises the minimum.

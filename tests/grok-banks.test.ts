@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bankTools, listAccounts, listTransactions, plaidLinkFinish, simplefinClaim } from "../src/connectors/banks";
 import { saveTokens } from "../src/connectors/oauth";
 import { setSecret } from "../src/platform/secrets";
-import { buildResponsesBody, signInWithX, XAI_CLIENT_ID, xaiAdapter } from "../src/providers/xai";
+import { adoptRequiredVersion, buildResponsesBody, signInWithX, XAI_CLIENT_ID, xaiAdapter } from "../src/providers/xai";
 import type { ChatRequest } from "../src/providers/types";
 import type { McpServerConfig, Message, ModelInfo, Part, ProviderConfig } from "../src/types";
 import { bytesToBase64, utf8 } from "../src/util/bytes";
@@ -153,6 +153,24 @@ describe("Sign in with X", () => {
     expect(gateway[1].headers.get("x-xai-token-auth")).toBe("xai-grok-cli");
     expect(gateway[1].headers.get("x-grok-model-override")).toBe("grok-4");
     expect(calls.some((c) => c.url.includes("api.x.ai"))).toBe(false);
+  });
+
+  it("sends a client version xAI accepts, and adopts a newer minimum from a 426", async () => {
+    await saveTokens("provider.xai", { access_token: "tok", expires_at: Date.now() + 3_600_000, client_id: XAI_CLIENT_ID, token_endpoint: "https://auth.x.ai/oauth2/token" });
+    const versions: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      const v = new Headers(init.headers).get("x-grok-client-version") ?? "";
+      versions.push(v);
+      if (v !== "1.2.0") return Response.json({ error: `Your Grok CLI version (${v}) is outdated. Please update to version 1.2.0 or later via \`grok update\` or the installation documentation.` }, { status: 426 });
+      return sse([{ type: "response.output_text.delta", output_index: 0, delta: "ok" }, { type: "response.completed", response: { status: "completed" } }]);
+    });
+    const r = await xaiAdapter.chat(request({ provider: provider({ signedIn: true }), options: { params: {}, webSearch: false, refusalFallback: false } }));
+    expect(r.parts).toEqual([{ type: "text", text: "ok" }]);
+    expect(versions[0]).toMatch(/^1\.\d+\.\d+$/);
+    expect(versions.at(-1)).toBe("1.2.0");
+    // never goes backwards, and nonsense is ignored
+    expect(adoptRequiredVersion("Please update to version 1.0.13 or later")).toBe(false);
+    expect(adoptRequiredVersion("server error")).toBe(false);
   });
 
   it("lists the subscription's models from the gateway", async () => {
