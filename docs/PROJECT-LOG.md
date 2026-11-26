@@ -145,3 +145,9 @@ Sign in with X now works on Windows (0.2.18).
 - **Grok Imagine:** always listed and works with Sign in with X (requests go to api.x.ai with the sign-in, falling back to the key). Grok chats use it unless the chat has its own pick, with a switch to turn that off. Switching modes no longer changes saved defaults.
 
 Tested with unit tests and mocked e2e; not yet against xAI's real service.
+
+**Part 2 delivered:** a **Customize** settings tab.
+
+- **Global:** a response style (presets or your own words), "what models should know about you", and the existing standing instructions.
+- **Per model:** overrides with a field-level fallback to Global; instructions can replace the global ones or be added to them.
+- **Managing it:** **Use Global** clears a model's settings, a "what this model receives" preview shows the result, and the chat's parameters panel shows Global or its own with a shortcut. This works for every provider. Consortium members use their own model's customization.

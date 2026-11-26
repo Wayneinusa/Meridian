@@ -140,6 +140,8 @@ interface State {
   sync: SyncStatus;
   sidebarOpen: boolean;
   settingsTab: string | null;
+  /** Settings → Customize opens this model's settings (providerId::modelId) */
+  customizeModel?: string;
   paramsOpen: boolean;
   preview: BlobRef | null;
   composerInbox: { parts: Extract<Part, { type: "attachment" }>[]; text?: string; seq: number };

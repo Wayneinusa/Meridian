@@ -13,6 +13,7 @@ import type { CloudSync, McpServerConfig, MediaHttpSpec, ModelInfo, ModelRef, Pr
 import { modelKey, uid } from "../types";
 import { useProviders } from "./BackendPicker";
 import { BrowserSettings } from "./BrowserSettings";
+import { CustomizeTab } from "./CustomizeTab";
 import { Icon } from "./icons";
 import { ConnectorsTab } from "./ConnectorsTab";
 import { MemoryTab, PluginsTab } from "./PluginsTab";
@@ -21,6 +22,7 @@ import { GeneralExtras, SearchKeys } from "./SettingsExtras";
 const TABS = [
   ["providers", "Providers & keys"],
   ["models", "Models"],
+  ["customize", "Customize"],
   ["tools", "Tools & computer"],
   ["connectors", "Connectors"],
   ["plugins", "Plugins"],
@@ -969,10 +971,13 @@ function GeneralTab({ settings }: { settings: Settings }) {
           <option value="dark">Dark</option>
         </select>
       </label>
-      <label className="field">
-        <span>Your standing instructions (added to every chat)</span>
-        <textarea rows={4} defaultValue={settings.systemPrompt} placeholder="e.g. I'm a product manager in Berlin. Prefer concise answers and metric units." onBlur={(e) => e.target.value !== settings.systemPrompt && void updateSettings({ systemPrompt: e.target.value })} />
-      </label>
+      <div className="note" style={{ marginBottom: 12 }}>
+        Your standing instructions, style and "about me" are under{" "}
+        <button className="link-btn" onClick={() => useApp.setState({ settingsTab: "customize" })}>
+          Customize
+        </button>
+        , globally and per model.
+      </div>
       <div className="card">
         <Toggle checked={settings.showThinking} onChange={(v) => void updateSettings({ showThinking: v })} label="Show the model's thinking" hint="A collapsed summary of reasoning, when the model provides one." />
         <Toggle
@@ -1022,6 +1027,7 @@ export function SettingsModal() {
           <div className="settings-pane" role="tabpanel">
             {tab === "providers" && <ProvidersTab settings={settings} />}
             {tab === "models" && <ModelsTab settings={settings} />}
+            {tab === "customize" && <CustomizeTab settings={settings} />}
             {tab === "tools" && <ToolsTab settings={settings} />}
             {tab === "connectors" && <ConnectorsTab />}
             {tab === "sync" && <SyncTab settings={settings} />}

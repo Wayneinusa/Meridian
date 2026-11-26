@@ -367,6 +367,23 @@ export interface CloudSync {
   account?: string;
 }
 
+export type StyleId = "default" | "concise" | "explanatory" | "formal" | "friendly" | "socratic" | "custom";
+
+/** Response style, what the model should know about the user, and instructions. */
+export interface Customization {
+  style?: StyleId;
+  /** the style in the user's words, when style is "custom" */
+  styleText?: string;
+  about?: string;
+  instructions?: string;
+}
+
+/** A model's own customization: anything left undefined uses the global setting. */
+export interface ModelCustomization extends Customization {
+  /** replace: only this model's instructions; add: the global ones, then these */
+  instructionsMode?: "replace" | "add";
+}
+
 export interface Settings {
   theme: "system" | "light" | "dark";
   providers: ProviderConfig[];
@@ -375,7 +392,12 @@ export interface Settings {
   videoModel?: ModelRef;
   /** chats with a Grok model make images and video with Grok Imagine (unless the chat has its own pick). Default on. */
   grokImagine?: boolean;
+  /** standing instructions for every model (the global customization's instructions) */
   systemPrompt: string;
+  /** global style and "about me"; instructions are systemPrompt */
+  customization?: Omit<Customization, "instructions">;
+  /** per-model overrides (key: providerId::modelId); unset fields fall back to the global ones */
+  modelCustom?: Record<string, ModelCustomization>;
   /** parameter defaults for every chat */
   params: ModelParams;
   /** parameter presets per model (key: providerId::modelId) */

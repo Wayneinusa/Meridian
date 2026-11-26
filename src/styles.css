@@ -486,3 +486,7 @@ textarea.mono { font: 12.5px/1.45 ui-monospace, Menlo, Consolas, monospace; }
 .member-msg .member-head .muted { font-size: 12px; }
 .member-msg.phase-vote { padding: 6px 12px; }
 .consortium-outcome { display: inline-block; margin: 4px 0 2px; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 13px; font-weight: 600; }
+
+.override-row { border-top: 1px solid var(--border); padding: 10px 0; }
+.override-row:first-of-type { border-top: none; }
+.custom-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; }

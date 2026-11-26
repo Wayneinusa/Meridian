@@ -246,6 +246,7 @@ export async function runTurn(host: EngineHost, c: Conversation, opts: TurnOptio
         knowledgeFiles: knowledge.map((f) => f.name),
         skillsText: opts.noTools ? "" : skillsPrompt(pluginSkills(host.library.list("plugins"))),
         subagent: depth > 0,
+        model: ref,
       });
       const params = supportedParams({ ...resolveParams(settings, ref, c), ...(agent?.params ?? {}), ...(c.params ?? {}) }, provider.kind, model);
       // a task on the screen or in the browser takes many small steps: give it the computer-use budget

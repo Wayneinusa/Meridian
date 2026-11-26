@@ -1,6 +1,7 @@
 // Generation parameters, editable at three levels: this chat, this model, all chats.
 import { useState } from "react";
 import { PARAM_SPECS, paramUnsupportedReason, resolveParams, type ParamSpec } from "../providers/params";
+import { modelCustomization } from "../agent/customize";
 import { findModel } from "../providers/registry";
 import { currentModelRef, setChatParams, setChatSystemPrompt, updateSettings, useApp } from "../state/store";
 import type { ModelParams } from "../types";
@@ -198,6 +199,16 @@ export function ParamsPanel() {
           {scope === "all" && "Defaults for every chat and model."}{" "}
           A more specific level wins. Anything left on default is not sent, so the provider's own default applies.
         </p>
+        {found && scope !== "all" && (
+          <div className="custom-line" data-testid="custom-line">
+            <span className="grow">
+              Style and instructions for {found.model.name}: <b>{modelCustomization(settings, ref) ? "its own (rest from Global)" : "Global"}</b>
+            </span>
+            <button className="btn small" onClick={() => useApp.setState({ settingsTab: "customize", customizeModel: key })}>
+              {modelCustomization(settings, ref) ? "Edit" : "Customize this model"}
+            </button>
+          </div>
+        )}
         {setCount > 0 && (
           <button className="btn small" style={{ marginTop: 10 }} onClick={() => write({})}>
             Reset {setCount} setting{setCount === 1 ? "" : "s"} at this level

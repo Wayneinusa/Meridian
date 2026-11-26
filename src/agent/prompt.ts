@@ -1,7 +1,8 @@
 import { platform } from "../platform";
 import { computerContext } from "../tools/computer";
 import type { Tool } from "../tools/types";
-import type { Agent, Conversation, MemoryItem, Project, Settings } from "../types";
+import type { Agent, Conversation, MemoryItem, ModelRef, Project, Settings } from "../types";
+import { customizationPrompt } from "./customize";
 
 export interface PromptParts {
   settings: Settings;
@@ -17,6 +18,8 @@ export interface PromptParts {
   knowledgeFiles: string[];
   skillsText: string;
   subagent?: boolean;
+  /** the model answering: its own customization applies, else the global one */
+  model?: ModelRef;
 }
 
 /** Stable across a day so provider-side prompt caches keep hitting. */
@@ -55,7 +58,7 @@ export function buildSystemPrompt(p: PromptParts): string {
   if (tools.some((t) => t.group === "computer")) sections.push(computerContext());
   if (conv.workFolder) sections.push(`The user gave you the folder ${conv.workFolder} to work in. You may read, create and change files inside it with the file tools without asking; ask before deleting anything.`);
   if (p.skillsText) sections.push(p.skillsText);
-  if (settings.systemPrompt.trim()) sections.push(`The user's standing instructions:\n${settings.systemPrompt.trim()}`);
+  sections.push(...customizationPrompt(settings, p.model));
   if (p.memories.length) {
     sections.push(
       `What you remember about the user (from earlier chats). Use it when relevant; do not recite it. ${names.has("remember") ? "Save new lasting facts with remember and remove wrong ones with forget (by id)." : ""}\n` +
