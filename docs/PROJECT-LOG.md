@@ -101,7 +101,7 @@ It had been planned but not yet built.
 
 **Delivered:** `CLAUDE.md`, which Claude Code loads automatically, and this log. Both are updated with every piece of work.
 
-## 9. "Signing into Grok asks me to enter a code in Grok Build" → 0.2.15
+## 9. "Signing into Grok asks me to enter a code in Grok Build" → 0.2.16
 
 **Cause:** xAI's sign-in page passes the code back to Meridian from a page script. The browser first asks the local listener for permission (a CORS / Private Network Access check), and the old listener didn't answer it, so the page fell back to showing the code.
 

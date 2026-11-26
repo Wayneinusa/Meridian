@@ -23,7 +23,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 
 - **Repository:** https://github.com/Wayneinusa/Meridian (branch `main`); push remote `https://github.com/Wayneinusa/Meridian.git`.
 - **Releases** (the owner downloads from here): https://github.com/Wayneinusa/Meridian/releases/latest. It carries `Meridian_<version>_x64-setup.exe` (Windows) and `Meridian-unsigned.ipa` (iPhone/iPad).
-- **Version:** each CI build is `0.2.<run number>`. The latest released version is **0.2.15** (check the release page; CI numbers it).
+- **Version:** each CI build is `0.2.<run number>`. The latest released version is **0.2.16**.
 
 ## How the owner likes to work
 
@@ -52,7 +52,7 @@ The owner's goal is feature parity with, or better than, **Claude Cowork**, **Ty
 | Banks | Read-only, through SimpleFIN Bridge or the owner's own Plaid keys. Wells Fargo, American Express and Capital One each have a connector, plus "Any bank". |
 | iOS builds | GitHub Actions on **`macos-15-intel`**: Apple-silicon runners were cancelled for lack of capacity. The app is unsigned; the owner sideloads it. |
 
-## Status: built and shipped (0.2.15)
+## Status: built and shipped (0.2.16)
 
 | Area | Where |
 |---|---|
