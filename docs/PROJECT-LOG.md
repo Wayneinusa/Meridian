@@ -112,7 +112,7 @@ It had been planned but not yet built.
 - *Use a code instead* (device code) keeps working as before.
 - Verified with Rust tests against the listener and unit tests of the paste path; not yet against xAI's real page, which the build machine cannot reach.
 
-## 10. "It still doesn't work: the page says the device is connected, but nothing changes in the app"
+## 10. "It still doesn't work: the page says the device is connected, but nothing changes in the app" → 0.2.18
 
 **Cause:** sign-in itself succeeded, but on Windows the tokens could not be saved. Windows Credential Manager holds at most 1280 characters per entry, and xAI's tokens are longer. The error appeared only as a short toast. The same limit could hit Google Drive, OneDrive and connector sign-ins.
 
