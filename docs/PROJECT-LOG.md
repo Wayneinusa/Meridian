@@ -122,7 +122,7 @@ It had been planned but not yet built.
 - A failed sign-in now leaves its reason on the Grok card.
 - Verified with Rust tests using a store that enforces Windows' limit; the Windows build compiles in CI.
 
-## 11. "Signed in, but chatting says 426: Your Grok CLI version (1) is outdated"
+## 11. "Signed in, but chatting says 426: Your Grok CLI version (1) is outdated" → 0.2.20
 
 Sign in with X now works on Windows (0.2.18).
 
